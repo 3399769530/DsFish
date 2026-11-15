@@ -26,8 +26,8 @@ export const MEM_TEXT_MAX: number = 200
 export const MEM_TAG_MAX: number = 3
 /** 回收站保留天数 */
 export const MEM_KEEP_DAYS: number = 3
-/** 多久没被引用就自动进回收站 */
-export const MEM_FORGET_DAYS: number = 60
+/** 有效强度降到这个值及以下自动进回收站 */
+export const MEM_FORGET_STRENGTH: number = 3
 /** 强度：新建默认 60 */
 export const MEM_STRENGTH_START: number = 60
 export const MEM_STRENGTH_MAX: number = 100
@@ -192,19 +192,27 @@ function activeCountOf(list: Array<Memory>): number {
 	return n
 }
 
-/** 强度（老数据没有这个字段时按默认 60 算） */
+/** 强度（老数据没有这个字段时按默认 60 算）；每天衰减：距上次被引用（没引用过按创建时间）每满一天 -1 */
 export function strengthOf(m: Memory): number {
 	const s = m.strength
-	if (s == null) {
-		return MEM_STRENGTH_START
+	let base = MEM_STRENGTH_START
+	if (s != null) {
+		base = s!
 	}
-	if (s! < 0) {
-		return 0
+	if (base < 0) {
+		base = 0
 	}
-	if (s! > MEM_STRENGTH_MAX) {
-		return MEM_STRENGTH_MAX
+	if (base > MEM_STRENGTH_MAX) {
+		base = MEM_STRENGTH_MAX
 	}
-	return s!
+	const lastHit = m.lastHitAt
+	const ref = lastHit > 0 ? lastHit : m.createdAt
+	const days = Math.floor((Date.now() - ref) / DAY_MS)
+	if (days <= 0) {
+		return base
+	}
+	const v = base - days
+	return v < 0 ? 0 : v
 }
 
 /** 强度到顶了没有（面板上打「极致」用） */
@@ -218,8 +226,8 @@ export function strengthRatio(m: Memory): number {
 }
 
 /**
- * 自动忘却：超过 60 天没被引用的记忆自动进回收站
- * 引用时间取 lastHitAt，没被引用过就用创建时间
+ * 自动忘却：有效强度（随天衰减）降到 3 及以下的记忆自动进回收站
+ * 新记忆 60 起、每天 -1，大约 57 天；期间被查询命中会回血续命
  */
 export function autoForget(): number {
 	const list = loadMemories()
@@ -231,9 +239,7 @@ export function autoForget(): number {
 		if (isDel) {
 			continue
 		}
-		const lastHit = m.lastHitAt
-		const ref = lastHit > 0 ? lastHit : m.createdAt
-		if (now - ref > MEM_FORGET_DAYS * DAY_MS) {
+		if (strengthOf(m) <= MEM_FORGET_STRENGTH) {
 			m.deleted = true
 			m.deletedAt = now
 			n++
@@ -458,6 +464,8 @@ export function restoreMemory(id: string): boolean {
 		if (list[i].id == id && (list[i].deleted != null && list[i].deleted!)) {
 			list[i].deleted = false
 			list[i].deletedAt = 0
+			// 重置衰减时钟：不然刚放出来强度还是 ≤3，下次自动忘却又被收进去
+			list[i].lastHitAt = Date.now()
 			ok = true
 		}
 	}

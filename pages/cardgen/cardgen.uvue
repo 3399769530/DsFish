@@ -1,0 +1,239 @@
+<template>
+	<view class="page">
+
+		<view class="nav" :style="'padding-top:' + headPad + 'px'">
+			<view class="back" @click="goBack">
+				<text class="back-t">←</text>
+			</view>
+			<text class="title">角色卡生成</text>
+		</view>
+		<view class="rule"></view>
+
+		<scroll-view class="body" scroll-y="true">
+			<view class="wrap">
+				<text class="hint">用一两句话描述你想要的角色，点「生成提示词」，复制去任意外部模型（DeepSeek 网页版、ChatGPT 都行），把它返回的 JSON 粘回来导入。</text>
+				<text class="link" @click="onGoImport">已经拿到 JSON 了？去「导入 AI 生成的角色」</text>
+
+				<text class="label">我的需求</text>
+				<textarea class="area area-in" :value="need" :maxlength="500" placeholder="例：角色是DeepSeek 小鲸鱼女儿，用户是你的爸爸。"
+					placeholder-style="color:#B9B1A0" @input="onNeedInput"></textarea>
+				<view class="meta-row">
+					<text class="meta">{{ need.length }} / 500</text>
+				</view>
+
+				<view class="savebtn" :style="need.trim().length == 0 ? 'background-color:#C9BFAC' : 'background-color:#1C1A16'" @click="onGen">
+					<text class="savebtn-t">生成提示词</text>
+				</view>
+
+				<view v-if="prompt.length > 0">
+					<view class="meta-row">
+						<text class="label label-out">成品提示词</text>
+						<text class="copy" @click="onCopy">复制</text>
+					</view>
+					<textarea class="area area-out" :value="prompt" :maxlength="-1"></textarea>
+					<text class="note">把上面这段整体复制给外部模型，它会回一个 JSON；JSON 原样粘回来就能导入。</text>
+				</view>
+
+				<view class="pad"></view>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script lang="uts">
+	import { buildCardPrompt } from '../../utils/cardgen.uts'
+
+	export default {
+		data() {
+			return {
+				headPad: 18,
+				need: '',
+				prompt: ''
+			}
+		},
+		onLoad() {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 14
+				}
+			} catch (e) {
+				// 默认值
+			}
+		},
+		methods: {
+			onNeedInput(e: InputEvent): void {
+				this.need = e.detail.value
+			},
+			onGen(): void {
+				if (this.need.trim().length == 0) {
+					uni.showToast({ title: '先描述一下想要的角色', icon: 'none' })
+					return
+				}
+				this.prompt = buildCardPrompt(this.need)
+			},
+			onCopy(): void {
+				uni.setClipboardData({
+					data: this.prompt,
+					success: () => {
+						uni.showToast({ title: '已复制，去粘给外部模型', icon: 'none' })
+					},
+					fail: () => {
+						uni.showToast({ title: '复制失败', icon: 'none' })
+					}
+				})
+			},
+			onGoImport(): void {
+				uni.navigateTo({
+					url: '/pages/cardimport/cardimport'
+				})
+			},
+			goBack(): void {
+				uni.navigateBack()
+			}
+		}
+	}
+</script>
+
+<style>
+	.page {
+		flex: 1;
+		flex-direction: column;
+		background-color: #F7F2E8;
+	}
+
+	.nav {
+		flex-direction: row;
+		align-items: flex-end;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 10px;
+	}
+
+	.back {
+		width: 34px;
+		height: 30px;
+		justify-content: flex-end;
+		padding-bottom: 4px;
+	}
+
+	.back-t {
+		font-size: 20px;
+		color: #1C1A16;
+	}
+
+	.title {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 23px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #1C1A16;
+		margin-left: 6px;
+	}
+
+	.rule {
+		height: 2px;
+		background-color: #1C1A16;
+		margin-left: 24px;
+		margin-right: 24px;
+	}
+
+	.body {
+		flex: 1;
+	}
+
+	.wrap {
+		padding-left: 24px;
+		padding-right: 24px;
+	}
+
+	.hint {
+		font-size: 12px;
+		line-height: 19px;
+		color: #8A8375;
+		margin-top: 14px;
+	}
+
+	.link {
+		font-size: 11.5px;
+		color: #B4553C;
+		margin-top: 8px;
+	}
+
+	.label {
+		font-size: 12px;
+		letter-spacing: 2px;
+		color: #6B6656;
+		margin-top: 18px;
+		font-weight: bold;
+	}
+
+	.label-out {
+		margin-top: 22px;
+	}
+
+	.area {
+		width: 100%;
+		margin-top: 10px;
+		padding: 12px;
+		background-color: #EFE7D8;
+		border-radius: 4px;
+		font-size: 12px;
+		color: #1C1A16;
+	}
+
+	.area-in {
+		height: 110px;
+	}
+
+	.area-out {
+		height: 320px;
+		font-family: monospace;
+	}
+
+	.meta-row {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		margin-top: 8px;
+	}
+
+	.meta {
+		font-size: 11.5px;
+		color: #A9A292;
+	}
+
+	.copy {
+		font-size: 12px;
+		letter-spacing: 2px;
+		color: #B4553C;
+	}
+
+	.savebtn {
+		flex-direction: row;
+		margin-top: 18px;
+		padding-top: 14px;
+		padding-bottom: 14px;
+		border-radius: 3px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.savebtn-t {
+		font-size: 13px;
+		letter-spacing: 3px;
+		color: #F7F2E8;
+	}
+
+	.note {
+		font-size: 11px;
+		line-height: 17px;
+		color: #B9B1A0;
+		margin-top: 10px;
+	}
+
+	.pad {
+		height: 30px;
+	}
+</style>

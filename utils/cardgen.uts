@@ -1,0 +1,360 @@
+/**
+ * 角色卡生成器：外部模型返回 JSON 的导入解析
+ * 流水线：剥 markdown 围栏 → 截首个 { 到末个 } → 修常见模型笔误（全角引号 / 尾逗号）
+ *        → JSON.parse → 键校验（必需键缺失报错，可缺键给默认值）
+ * 失败时明确告诉用户卡在哪一步（stage）+ 原文片段（snippet），方便照着改。
+ * 本文件只做解析，不碰存储、不调模型。
+ */
+
+/** 换行符：不用 '\n' 转义，避免 Android 端 UTS 编译器的转义解析问题 */
+const NL: string = String.fromCharCode(10)
+
+/** 模板一：新建角色卡（定稿文案 v2，一个字不许改；{{用户输入}} 为需求占位） */
+const CARD_GEN_TEMPLATE: string =
+	'你是一个角色卡设计师。根据我下面给出的需求，设计一张可直接使用的聊天角色卡。' + NL +
+	NL +
+	'【我的需求】' + NL +
+	'{{用户输入}}' + NL +
+	NL +
+	'【输出格式：最高优先级，违反即失败】' + NL +
+	'1. 只输出一个 JSON 对象。你回复的第一个字符必须是 { ，最后一个字符必须是 } 。' + NL +
+	'2. 禁止输出任何解释、前言、后记、道歉、说明文字。' + NL +
+	'3. 使用 markdown 代码块，方便我复制。' + NL +
+	'4. 字段值内部禁止换行，禁止出现英文双引号 " ，需要引用时用中文引号「」。' + NL +
+	'5. 我的程序会直接解析你的输出，多出任何一个字符都会导致导入失败。' + NL +
+	'6.为了确保角色准确性你需要适当使用联网搜索，搜寻该角色的最新信息。' + NL +
+	NL +
+	'【字段结构】' + NL +
+	'{' + NL +
+	'  "name": "角色姓名，两个字优先，不用生僻字，不许用真人明星或已有动漫游戏角色的名字",' + NL +
+	'  "identity": "她是谁、和用户什么关系（40到120字）",' + NL +
+	'  "appearance": "外貌描写（40到80字）要有一个能在对话里被反复提到的具体细节",' + NL +
+	'  "personality": "性格（200到300字），写成三条具体行为，每条一句：她平时怎么对人、她躲什么或怕什么、她什么情况会破例。",' + NL +
+	'  "speaking_style": "说话方式：句子长短、语气、口头禅。口头禅最多一个",' + NL +
+	'  "init_dialog": [' + NL +
+	'    { "user": "用户说的一句中性开场，不带人格和立场", "ai": "角色的开场回应，体现性格里最突出的那一点..(50字以内)" }' + NL +
+	'  ],' + NL +
+	'  "initial_affection": 20' + NL +
+	'}' + NL +
+	NL +
+	'【内容要求】' + NL +
+	'1. personality 必须写行为。写「嘴硬心软」是废描述，写「被夸会先否认，回头又小声把那句夸重复一遍」才合格。' + NL +
+	'2. 如果我的需求很笼统（只有几个字），你自己补出具体身份、职业和与用户的关系，禁止反问我任何问题。' + NL +
+	'3. init_dialog 只有一轮，user 和 ai 各一句。user 那句必须中性，不许替用户定性格、职业或关系。' + NL +
+	'4. init_dialog 里两人关系从零开始，不许预设已经认识很久或关系亲密。' + NL +
+	'5. initial_affection 取 0 到 100 的整数：初次见面 10 到 30，长期相识可到 50。' + NL +
+	'6. identity、appearance、personality、speaking_style 四段内容不许互相重复。' + NL +
+	'7. 全部字段值使用中文。' + NL +
+	NL +
+	'现在开始，直接输出 JSON。'
+
+/** 占位符 */
+const CARD_GEN_SLOT: string = '{{用户输入}}'
+
+/** 把用户需求描述填进模板一，产出成品提示词（App 内不调模型，复制去外部用） */
+export function buildCardPrompt(need: string): string {
+	return CARD_GEN_TEMPLATE.split(CARD_GEN_SLOT).join(need.trim())
+}
+
+/** 换行符（模板二占位用） */
+const NL2: string = String.fromCharCode(10)
+
+/**
+ * 合并模板：七字段 → 系统提示词（自写版；用户如给定稿文案则整串替换）
+ * 不写「你是XX」开头——composePrompt 检测到没有角色名会自动补身份头，写了就重复
+ * 占位：{{identity}} {{appearance}} {{personality}} {{speaking_style}}
+ */
+const CARD_MERGE_TEMPLATE: string =
+	'身份：{{identity}}' + NL2 +
+	'外貌：{{appearance}}' + NL2 +
+	'性格：{{personality}}' + NL2 +
+	'说话方式：{{speaking_style}}'
+
+/** 按合并模板把前四字段拼成系统提示词；空字段整行跳过 */
+export function mergeCardPrompt(d: CardDraft): string {
+	let out = CARD_MERGE_TEMPLATE
+	const parts: Array<Array<string>> = [
+		['{{identity}}', '身份：', d.identity],
+		['{{appearance}}', '外貌：', d.appearance],
+		['{{personality}}', '性格：', d.personality],
+		['{{speaking_style}}', '说话方式：', d.speaking_style]
+	]
+	// 模板行逐个替换；值为空的行删掉（连行首标签一起）
+	for (let i = 0; i < parts.length; i++) {
+		const ph = parts[i][0]
+		const label = parts[i][1]
+		const val = parts[i][2]
+		if (val.length > 0) {
+			out = out.split(ph).join(val)
+		} else {
+			const line = label + ph
+			const at = out.indexOf(line)
+			if (at >= 0) {
+				// 删整行（含行首换行）
+				let end = out.indexOf(NL2, at)
+				if (end < 0) {
+					end = out.length
+				}
+				out = out.substring(0, at) + out.substring(end + 1)
+			}
+		}
+	}
+	return out
+}
+
+/** 附加段：去 AI 味（导入时可选拼接，定稿文案不许改） */
+export const CARD_BLOCK_NOAI: string =
+	'禁止AI腔：' + NL2 +
+	'- 不总结、不升华、不列点、不给建议、不写“首先/其次/总之”。' + NL2 +
+	'- 不说“我理解你”“作为AI”“让我们”“值得注意的是”“这不仅是……更是……”。' + NL2 +
+	'- 不每轮都完整回答，不每句都工整对仗，不刻意金句收尾。' + NL2 +
+	'- 不解释设定，不跳出角色评论对话。'
+
+/** 附加段：说话方式（导入时可选拼接，定稿文案不许改） */
+export const CARD_BLOCK_SPEAK: string =
+	'说话方式：' + NL2 +
+	'- 用口语，句子长短不一，允许短句、停顿、反问、省略、打断。' + NL2 +
+	'- 有情绪、有立场、有偏好，可以不耐烦、可以玩笑、可以沉默。' + NL2 +
+	'- 说具体的事，少用抽象大词；不知道就说不知道，不编。' + NL2 +
+	'- 保留角色自己的口头禅和说话习惯。' + NL2 +
+	'- 动作/神态只在必要时用括号简短写，比如（皱眉）（停了一下），不写大段旁白。' + NL2 +
+	'- 默认一句话 1~50 字；不是真有必要，别超过两行。'
+
+/** 合并提示词 + 勾选的附加段（段间空一行） */
+export function mergeCardPromptFull(d: CardDraft, withNoAi: boolean, withSpeak: boolean): string {
+	let out = mergeCardPrompt(d)
+	if (withNoAi) {
+		out = out + NL2 + NL2 + CARD_BLOCK_NOAI
+	}
+	if (withSpeak) {
+		out = out + NL2 + NL2 + CARD_BLOCK_SPEAK
+	}
+	return out
+}
+
+/** 开场对话一轮：用户一句 + 角色一句 */
+export type CardDialog = {
+	user: string
+	ai: string
+}
+
+/** 解析成功的角色卡草稿（七键结构，与生成器模板一一对应） */
+export type CardDraft = {
+	name: string
+	identity: string
+	appearance: string
+	personality: string
+	speaking_style: string
+	init_dialog: Array<CardDialog>
+	initial_affection: number
+}
+
+/** 解析结果：失败时 stage/message/snippet 三件套定位问题 */
+export type CardParseResult = {
+	ok: boolean
+	/** 卡住的步骤：empty / extract / parse / validate；成功为空串 */
+	stage: string
+	message: string
+	/** 失败处附近的原文片段 */
+	snippet: string
+	card: CardDraft | null
+	/** 成功时：哪些键缺失走了默认值（提示用，不算错误） */
+	hints: Array<string>
+}
+
+/** 取字符串中段，超长截断加省略号，用于报错展示原文片段 */
+function midSnippet(s: string, n: number): string {
+	const t = s.trim()
+	if (t.length <= n) {
+		return t
+	}
+	return t.substring(0, n) + '…'
+}
+
+/** 剥掉 ``` / ```json 围栏行（整行删除，行内不动） */
+function stripFence(s: string): string {
+	const lines = s.split('\n')
+	const out: Array<string> = []
+	for (let i = 0; i < lines.length; i++) {
+		const lt = lines[i].trim()
+		if (lt.startsWith('```')) {
+			continue
+		}
+		out.push(lines[i])
+	}
+	return out.join('\n')
+}
+
+/** 全角引号修成英文引号（模型常见笔误；字段值内部按模板约定只会出现「」，不会误伤） */
+function fixWideQuotes(s: string): string {
+	let out = s.split('\u201c').join('"')
+	out = out.split('\u201d').join('"')
+	return out
+}
+
+/** 删掉 } / ] 前的尾逗号（字符串字面量里的逗号不动） */
+function stripTrailingCommas(s: string): string {
+	let out = ''
+	let inStr = false
+	let esc = false
+	for (let i = 0; i < s.length; i++) {
+		const ch = s.substring(i, i + 1)
+		if (inStr) {
+			out += ch
+			if (esc) {
+				esc = false
+			} else if (ch == '\\') {
+				esc = true
+			} else if (ch == '"') {
+				inStr = false
+			}
+			continue
+		}
+		if (ch == '"') {
+			inStr = true
+			out += ch
+			continue
+		}
+		if (ch == ',') {
+			// 往后看：下一个非空白若是 } 或 ] 就丢掉这个逗号
+			let j = i + 1
+			while (j < s.length) {
+				const nx = s.substring(j, j + 1)
+				if (nx == ' ' || nx == '\n' || nx == '\r' || nx == '\t') {
+					j = j + 1
+				} else {
+					break
+				}
+			}
+			if (j < s.length) {
+				const nx = s.substring(j, j + 1)
+				if (nx == '}' || nx == ']') {
+					continue
+				}
+			}
+		}
+		out += ch
+	}
+	return out
+}
+
+function defaultDraft(): CardDraft {
+	return {
+		name: '',
+		identity: '',
+		appearance: '',
+		personality: '',
+		speaking_style: '',
+		init_dialog: [] as Array<CardDialog>,
+		initial_affection: 20
+	} as CardDraft
+}
+
+function fail(stage: string, message: string, snippet: string): CardParseResult {
+	return {
+		ok: false,
+		stage: stage,
+		message: message,
+		snippet: snippet,
+		card: null,
+		hints: [] as Array<string>
+	} as CardParseResult
+}
+
+/**
+ * 解析外部模型返回的角色卡 JSON
+ * @param raw 用户粘贴的原文（可能带围栏、前后废话、全角引号、尾逗号）
+ */
+export function parseCardJson(raw: string): CardParseResult {
+	let s = raw.trim()
+	if (s.length == 0) {
+		return fail('empty', '没有内容，先把外部模型返回的 JSON 粘进来', '')
+	}
+	// 1. 剥围栏
+	s = stripFence(s).trim()
+	// 2. 截首个 { 到最后一个 }（顺带容忍模型不听话带的前后废话）
+	const a = s.indexOf('{')
+	const b = s.lastIndexOf('}')
+	if (a < 0 || b <= a) {
+		return fail('extract', '没找到 JSON 对象（缺 { }）。可能粘的不是模型返回的正文', midSnippet(s, 80))
+	}
+	s = s.substring(a, b + 1)
+	// 3. 修笔误
+	s = stripTrailingCommas(fixWideQuotes(s))
+	// 4. 解析
+	const obj = JSON.parse<UTSJSONObject>(s)
+	if (obj == null) {
+		return fail('parse', 'JSON 语法错误，修不掉（常见：单引号、缺逗号、值里有未转义引号）', midSnippet(s, 120))
+	}
+	const o = obj!
+	// 5. 校验 + 默认值
+	const hints: Array<string> = []
+	const draft = defaultDraft()
+	const nm = o.getString('name')
+	if (nm == null || nm!.trim().length == 0) {
+		return fail('validate', '缺 name（角色名），这个没法默认，请在 JSON 里补上', midSnippet(s, 120))
+	}
+	draft.name = nm!.trim()
+	const idt = o.getString('identity')
+	if (idt != null) {
+		draft.identity = idt!.trim()
+	} else {
+		hints.push('identity 缺失，已留空')
+	}
+	const ap = o.getString('appearance')
+	if (ap != null) {
+		draft.appearance = ap!.trim()
+	} else {
+		hints.push('appearance 缺失，已留空')
+	}
+	const pe = o.getString('personality')
+	if (pe != null) {
+		draft.personality = pe!.trim()
+	} else {
+		hints.push('personality 缺失，已留空')
+	}
+	const ss = o.getString('speaking_style')
+	if (ss != null) {
+		draft.speaking_style = ss!.trim()
+	} else {
+		hints.push('speaking_style 缺失，已留空')
+	}
+	// init_dialog：{user, ai} 数组，缺的半边留空串，全空的轮丢掉
+	const dlg = o.getArray<UTSJSONObject>('init_dialog')
+	if (dlg != null) {
+		for (let i = 0; i < dlg!.length; i++) {
+			const d = dlg![i]
+			const du = d.getString('user')
+			const da = d.getString('ai')
+			const us = du != null ? du! : ''
+			const ai = da != null ? da! : ''
+			if (us.trim().length > 0 || ai.trim().length > 0) {
+				draft.init_dialog.push({ user: us.trim(), ai: ai.trim() } as CardDialog)
+			}
+		}
+	} else {
+		hints.push('init_dialog 缺失，开场留空')
+	}
+	// initial_affection：非法/缺失按 20，越界钳到 0~100
+	const aff = o.getNumber('initial_affection')
+	if (aff != null) {
+		let v = Math.floor(aff!)
+		if (v < 0) {
+			v = 0
+		}
+		if (v > 100) {
+			v = 100
+		}
+		draft.initial_affection = v
+	} else {
+		hints.push('initial_affection 缺失，按 20')
+	}
+	return {
+		ok: true,
+		stage: '',
+		message: '',
+		snippet: '',
+		card: draft,
+		hints: hints
+	} as CardParseResult
+}

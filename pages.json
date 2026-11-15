@@ -55,6 +55,22 @@
 				"navigationStyle": "custom",
 				"backgroundColor": "#F7F2E8"
 			}
+		},
+		{
+			"path": "pages/cardgen/cardgen",
+			"style": {
+				"navigationBarTitleText": "角色卡生成",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		},
+		{
+			"path": "pages/cardimport/cardimport",
+			"style": {
+				"navigationBarTitleText": "导入 AI 生成的角色",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
 		}
 	],
 	"globalStyle": {

@@ -68,7 +68,7 @@
 					<text class="tip-t">回收站里的记忆 {{ keepLabel() }} 天后自动清除，期间可随时还原。</text>
 				</view>
 				<view v-if="tab == 0 && totalActive > 0" class="tip">
-					<text class="tip-t">强度：新记忆 60；被查询时增加。长期未被查询的记忆会自动进回收站。</text>
+					<text class="tip-t">强度：新记忆 60；被查询时增加，每闲置一天 -1；降到 3 以下自动进回收站。</text>
 				</view>
 
 				<view class="pad"></view>
@@ -106,7 +106,7 @@
 </template>
 
 <script lang="uts">
-	import { Memory, listActiveMemories, listDeletedMemories, removeMemory, restoreMemory, updateMemory, clearAllMemories, purgeDeleted, autoForget, parseTags, keepDaysLeft, memCreatedLabel, memChatLabel, strengthOf as memStrength, strengthIsMax, strengthRatio, MEM_LIMIT, MEM_KEEP_DAYS, MEM_FORGET_DAYS } from '../../utils/memory.uts'
+	import { Memory, listActiveMemories, listDeletedMemories, removeMemory, restoreMemory, updateMemory, clearAllMemories, purgeDeleted, autoForget, parseTags, keepDaysLeft, memCreatedLabel, memChatLabel, strengthOf as memStrength, strengthIsMax, strengthRatio, MEM_LIMIT, MEM_KEEP_DAYS } from '../../utils/memory.uts'
 	import PaperSheet from '../../components/paper-sheet/paper-sheet.uvue'
 
 	/** 关键词过滤：正文或任一标签包含就算命中 */
@@ -164,7 +164,7 @@
 			} catch (e) {
 				// 默认值
 			}
-			// 先把过期的东西处理掉：60 天没引用的进回收站，回收站超过 3 天的真删
+			// 先把过期的东西处理掉：强度衰减到 3 以下的进回收站，回收站超过 3 天的真删
 			autoForget()
 			purgeDeleted()
 			this.refresh()
@@ -247,9 +247,6 @@
 			},
 			keepLabel(): string {
 				return MEM_KEEP_DAYS.toString()
-			},
-			forgetLabel(): string {
-				return MEM_FORGET_DAYS.toString()
 			},
 			strengthOf(m: Memory): string {
 				return memStrength(m).toString()

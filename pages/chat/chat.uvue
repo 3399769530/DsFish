@@ -1507,9 +1507,26 @@
 				}
 				return out
 			},
+			/** 剥掉漏网的 DSML 工具标记（任意竖线变体；invoke/parameter 整元素删，孤立标签删，没闭合的从 < 起扣到末尾） */
+			stripDsml(s: string): string {
+				// invoke / parameter 整元素（含开标签、内容、闭合标签）：非贪婪到最近的同名闭合
+				let out = s.replace(new RegExp('<[|\uff5c]+DSML[|\uff5c]+(invoke|parameter)[^>]*>(.|\\n)*?</[|\uff5c]+DSML[|\uff5c]+\\1>', 'g'), '')
+				// 剩下没闭合的孤立标签（calls 容器、单开 invoke 之类；闭标签斜杠在竖线前）
+				out = out.replace(new RegExp('</?[|\uff5c]+DSML[|\uff5c]+[^>]*>', 'g'), '')
+				// 尾巴是没吐完的半个标签开头（< 、<｜D、<||DSML 之类）：扣住等流齐
+				const re = new RegExp('<[|\uff5c]{0,6}(D(S(M(L([|\uff5c]{0,6})?)?)?)?)?$')
+				const m = re.exec(out)
+				if (m != null) {
+					const seg = m![0]
+					if (seg != null) {
+						out = out.substring(0, out.length - seg!.length)
+					}
+				}
+				return out
+			},
 			/** 流式过程中把好感度标记藏掉（包括只收到一半的） */
 			displayText(raw: string): string {
-				let out = this.stripSysEcho(parseAffinity(parseMood(raw).text).text)
+				let out = this.stripDsml(this.stripSysEcho(parseAffinity(parseMood(raw).text).text))
 				// 正在输出的半个标记先藏起来
 				const marks: Array<string> = ['[aff', '【aff', '[mood', '【mood', '[Mood', '【Mood']
 				const closes: Array<string> = [']', '】', ']', '】', ']', '】']

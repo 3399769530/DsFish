@@ -42,7 +42,7 @@
 				<!-- 用户昵称 -->
 				<view class="field">
 					<text class="label">用户昵称</text>
-					<input class="input" :value="c.userName" :maxlength="24" placeholder="比如：主人"
+					<input class="input" :value="c.userName" :maxlength="24" placeholder="比如：老爸"
 						placeholder-style="color:#B9B1A0" @input="onUserInput" />
 					<view class="input-line"></view>
 					<text class="tip">你在对话里被怎么称呼；可留空</text>

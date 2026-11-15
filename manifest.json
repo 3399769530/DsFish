@@ -2,8 +2,8 @@
 	"name": "DsFish",
 	"appid": "__UNI__1700D63",
 	"description": "",
-	"versionName": "1.0.0",
-	"versionCode": "100",
+	"versionName": "0.1",
+	"versionCode": "10",
 	"uni-app-x": {},
 	/* 快应用特有相关 */
 	"quickapp": {},

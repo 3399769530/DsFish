@@ -318,7 +318,7 @@
 			}
 			this.today = todayLabel()
 			this.refreshMe()
-			// 过期处理：60 天没引用的记忆进回收站，回收站超 3 天的真删
+			// 过期处理：强度衰减到 3 以下的记忆进回收站，回收站超 3 天的真删
 			autoForget()
 			purgeDeleted()
 			seedDemo()
@@ -520,9 +520,11 @@
 				})
 			},
 			onNewChar(): void {
-				uni.navigateTo({
-					url: '/pages/char/char'
-				})
+				this.sheetMode = 'newchar'
+				this.sheetTitle = '新建角色卡'
+				this.sheetItems = ['自己写角色卡', '让 AI 写角色卡', '导入 AI 生成的角色']
+				this.sheetDanger = -1
+				this.sheetOpen = true
 			},
 			editChar(cid: string): void {
 				uni.navigateTo({
@@ -576,6 +578,16 @@
 			},
 			onSheetPick(i: number): void {
 				this.sheetOpen = false
+				if (this.sheetMode == 'newchar') {
+					if (i == 0) {
+						uni.navigateTo({ url: '/pages/char/char' })
+					} else if (i == 1) {
+						uni.navigateTo({ url: '/pages/cardgen/cardgen' })
+					} else if (i == 2) {
+						uni.navigateTo({ url: '/pages/cardimport/cardimport' })
+					}
+					return
+				}
 				if (this.sheetMode == 'export') {
 					if (i == 0) {
 						this.doExportFile()

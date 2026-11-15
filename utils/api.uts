@@ -233,36 +233,34 @@ export function chatUrl(p: Profile): string {
 
 const DSML_M: string = '<\uff5cDSML\uff5c'
 
-/** 统一成全角竖线变体，后面只处理一种 */
-function normDsml(text: string): string {
-	return text.split('|DSML|').join('\uff5cDSML\uff5c')
+/** 统一 DSML 标记变体：半角/全角竖线、任意根数（|DSML|、｜DSML｜、||DSML||、｜｜DSML｜｜…）全归成单全角竖线（export 仅供测试） */
+export function normDsml(text: string): string {
+	const re = new RegExp('[|\uff5c]+DSML[|\uff5c]+', 'g')
+	return text.replace(re, '\uff5cDSML\uff5c')
 }
 
-/** 正文里第一个「确定是 DSML 标记」或「可能是没吐完的半个标记」的位置；没有回 -1 */
-function dsmlHoldPoint(text: string): number {
-	const t = normDsml(text)
-	const at = t.indexOf(DSML_M)
-	if (at >= 0) {
-		return at
+/** 正文里第一个「确定是 DSML 标记」或「可能是没吐完的半个标记」的位置（原始文本下标）；没有回 -1（export 仅供测试） */
+export function dsmlHoldPoint(text: string): number {
+	// 完整标记：< 加任意根竖线 + DSML + 任意根竖线（半角全角混着都认）
+	const re = new RegExp('<[|\uff5c]+DSML[|\uff5c]+')
+	const m = re.exec(text)
+	if (m != null) {
+		return m!.index
 	}
-	// 结尾可能是半截标记（如 "<\uff5cDS"），先藏起来
-	const maxBack = DSML_M.length - 1
-	let i = t.length - 1
-	const floor = t.length - maxBack
-	while (i >= 0 && i >= floor) {
-		if (t.substring(i, i + 1) == '<') {
-			const tail = t.substring(i, t.length)
-			if (DSML_M.indexOf(tail) == 0) {
-				return i
-			}
+	// 结尾是半截标记（< 、<｜｜D 、<｜DSML 之类）：先藏起来等流齐
+	const re2 = new RegExp('<[|\uff5c]{0,6}(D(S(M(L([|\uff5c]{0,6})?)?)?)?)?$')
+	const m2 = re2.exec(text)
+	if (m2 != null) {
+		const seg = m2![0]
+		if (seg != null) {
+			return text.length - seg!.length
 		}
-		i--
 	}
 	return -1
 }
 
-/** 把正文里的 DSML invoke 解析成 {name, arguments} 列表 */
-function parseDsmlInvokes(text: string): Array<UTSJSONObject> {
+/** 把正文里的 DSML invoke 解析成 {name, arguments} 列表（export 仅供测试） */
+export function parseDsmlInvokes(text: string): Array<UTSJSONObject> {
 	const out: Array<UTSJSONObject> = []
 	const t = normDsml(text)
 	const invOpen = DSML_M + 'invoke'

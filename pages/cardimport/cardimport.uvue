@@ -1,0 +1,455 @@
+<template>
+	<view class="page">
+
+		<view class="nav" :style="'padding-top:' + headPad + 'px'">
+			<view class="back" @click="goBack">
+				<text class="back-t">←</text>
+			</view>
+			<text class="title">导入 AI 生成的角色</text>
+		</view>
+		<view class="rule"></view>
+		<!-- 生成器 ↔ 导入页互相连通 -->
+
+		<scroll-view class="body" scroll-y="true">
+			<view class="wrap">
+				<text class="hint">把外部模型返回的 JSON 原样粘进来（带 ``` 围栏或前后废话都能自动修）。解析成功后先给你看摘要，确认再存成角色卡。</text>
+				<text class="link" @click="onGoGen">还没提示词？去「让 AI 写角色卡」生成</text>
+
+				<textarea class="area" :value="text" :maxlength="-1" placeholder="在这里长按 → 粘贴 JSON…"
+					placeholder-style="color:#B9B1A0" @input="onInput"></textarea>
+				<view class="meta-row">
+					<text class="meta">{{ text.length }} 字符</text>
+				</view>
+
+				<view class="savebtn" :style="text.trim().length == 0 ? 'background-color:#C9BFAC' : 'background-color:#1C1A16'" @click="onParse">
+					<text class="savebtn-t">解析</text>
+				</view>
+
+				<!-- 失败：卡在哪一步 + 原文片段 -->
+				<view v-if="errText.length > 0" class="box box-err">
+					<text class="box-t">导入失败</text>
+					<text class="box-s">{{ errText }}</text>
+					<text v-if="errSnip.length > 0" class="box-snip">{{ errSnip }}</text>
+				</view>
+
+				<!-- 成功：七字段摘要 -->
+				<view v-if="card != null" class="box box-ok">
+					<text class="box-t">解析成功，确认一下</text>
+					<view class="kv"><text class="kv-k">名字</text><text class="kv-v">{{ card!.name }}</text></view>
+					<view class="kv"><text class="kv-k">身份</text><text class="kv-v">{{ card!.identity }}</text></view>
+					<view class="kv"><text class="kv-k">外貌</text><text class="kv-v">{{ card!.appearance }}</text></view>
+					<view class="kv"><text class="kv-k">性格</text><text class="kv-v">{{ card!.personality }}</text></view>
+					<view class="kv"><text class="kv-k">说话</text><text class="kv-v">{{ card!.speaking_style }}</text></view>
+					<view class="kv"><text class="kv-k">开场</text><text class="kv-v">{{ dialogText() }}</text></view>
+					<view class="kv"><text class="kv-k">好感</text><text class="kv-v">{{ card!.initial_affection.toString() }}</text></view>
+					<text v-for="(h, i) in hintList" :key="i" class="box-hint">· {{ h }}</text>
+				</view>
+
+				<!-- 可选附加段（常显：解析前也能先勾好） -->
+				<view class="checks">
+					<view class="checks-head">
+						<text class="checks-t">附加规则</text>
+						<text class="checks-n">{{ checksOn().toString() }} / 2</text>
+					</view>
+					<view class="checkcard" :style="ckNoAi ? 'border-color:#1C1A16;background-color:#EFE7D8' : 'border-color:#DCD4C4;background-color:#FBF7EE'"
+						@click="toggleNoAi">
+						<view class="check-l">
+							<text class="check-title">去除 AI 味</text>
+							<text class="check-desc">追加「禁止AI腔」：不总结升华、不列点给建议、不跳出角色评论对话。</text>
+						</view>
+						<view class="checkbox" :style="ckNoAi ? 'background-color:#1C1A16;border-color:#1C1A16' : 'background-color:transparent;border-color:#B9B1A0'">
+							<text v-if="ckNoAi" class="checkmark">✓</text>
+						</view>
+					</view>
+					<view class="checkcard" :style="ckSpeak ? 'border-color:#1C1A16;background-color:#EFE7D8' : 'border-color:#DCD4C4;background-color:#FBF7EE'"
+						@click="toggleSpeak">
+						<view class="check-l">
+							<text class="check-title">说话方式</text>
+							<text class="check-desc">口语化约束：句子长短不一、有情绪有立场、一句 1~50 字、少旁白。</text>
+						</view>
+						<view class="checkbox" :style="ckSpeak ? 'background-color:#1C1A16;border-color:#1C1A16' : 'background-color:transparent;border-color:#B9B1A0'">
+							<text v-if="ckSpeak" class="checkmark">✓</text>
+						</view>
+					</view>
+					<text class="checks-note">勾选的规则会追加到角色系统提示词末尾</text>
+				</view>
+
+				<view v-if="card != null" class="savebtn" @click="onSave">
+					<text class="savebtn-t">存为角色卡并去检查</text>
+				</view>
+
+				<view class="pad"></view>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script lang="uts">
+	import { parseCardJson, mergeCardPromptFull, CardDraft, CardParseResult } from '../../utils/cardgen.uts'
+	import { Character, InitDialog, newChar, upsertChar } from '../../utils/store.uts'
+
+	export default {
+		data() {
+			return {
+				headPad: 18,
+				text: '',
+				errText: '',
+				errSnip: '',
+				card: null as CardDraft | null,
+				hintList: [] as Array<string>,
+				ckNoAi: true,
+				ckSpeak: true
+			}
+		},
+		onLoad() {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 14
+				}
+			} catch (e) {
+				// 默认值
+			}
+		},
+		methods: {
+			onInput(e: InputEvent): void {
+				this.text = e.detail.value
+				this.errText = ''
+				this.errSnip = ''
+				this.card = null
+				this.hintList = [] as Array<string>
+			},
+			toggleNoAi(): void {
+				this.ckNoAi = !this.ckNoAi
+			},
+			toggleSpeak(): void {
+				this.ckSpeak = !this.ckSpeak
+			},
+			checksOn(): number {
+				let n = 0
+				if (this.ckNoAi) {
+					n = n + 1
+				}
+				if (this.ckSpeak) {
+					n = n + 1
+				}
+				return n
+			},
+			onParse(): void {
+				if (this.text.trim().length == 0) {
+					return
+				}
+				const r: CardParseResult = parseCardJson(this.text.trim())
+				if (!r.ok) {
+					this.card = null
+					this.hintList = [] as Array<string>
+					this.errText = '（' + r.stage + '）' + r.message
+					this.errSnip = r.snippet
+					return
+				}
+				this.errText = ''
+				this.errSnip = ''
+				this.card = r.card
+				this.hintList = r.hints
+			},
+			dialogText(): string {
+				if (this.card == null) {
+					return ''
+				}
+				const ds = this.card!.init_dialog
+				if (ds.length == 0) {
+					return '（无）'
+				}
+				const d = ds[0]
+				return '用户：' + d.user + ' / 角色：' + d.ai
+			},
+			onSave(): void {
+				if (this.card == null) {
+					return
+				}
+				const d = this.card!
+				const c: Character = newChar()
+				c.name = d.name
+				c.prompt = mergeCardPromptFull(d, this.ckNoAi, this.ckSpeak)
+				c.affinity = d.initial_affection
+				const dialogs: Array<InitDialog> = []
+				for (let i = 0; i < d.init_dialog.length; i++) {
+					const dd = d.init_dialog[i]
+					if (dd.user.length > 0) {
+						dialogs.push({ role: 'user', text: dd.user } as InitDialog)
+					}
+					if (dd.ai.length > 0) {
+						dialogs.push({ role: 'assistant', text: dd.ai } as InitDialog)
+					}
+				}
+				c.dialogs = dialogs
+				upsertChar(c)
+				this.card = null
+				this.hintList = [] as Array<string>
+				this.errText = ''
+				this.text = ''
+				uni.showToast({ title: '已存卡，去检查一下吧', icon: 'none' })
+				uni.navigateTo({
+					url: '/pages/char/char?id=' + c.id
+				})
+			},
+			onGoGen(): void {
+				uni.navigateTo({
+					url: '/pages/cardgen/cardgen'
+				})
+			},
+			goBack(): void {
+				uni.navigateBack()
+			}
+		}
+	}
+</script>
+
+<style>
+	.page {
+		flex: 1;
+		flex-direction: column;
+		background-color: #F7F2E8;
+	}
+
+	.nav {
+		flex-direction: row;
+		align-items: flex-end;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 10px;
+	}
+
+	.back {
+		width: 34px;
+		height: 30px;
+		justify-content: flex-end;
+		padding-bottom: 4px;
+	}
+
+	.back-t {
+		font-size: 20px;
+		color: #1C1A16;
+	}
+
+	.title {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 23px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #1C1A16;
+		margin-left: 6px;
+	}
+
+	.rule {
+		height: 2px;
+		background-color: #1C1A16;
+		margin-left: 24px;
+		margin-right: 24px;
+	}
+
+	.body {
+		flex: 1;
+	}
+
+	.wrap {
+		padding-left: 24px;
+		padding-right: 24px;
+	}
+
+	.hint {
+		font-size: 12px;
+		line-height: 19px;
+		color: #8A8375;
+		margin-top: 14px;
+	}
+
+	.link {
+		font-size: 11.5px;
+		color: #B4553C;
+		margin-top: 8px;
+	}
+
+	.area {
+		width: 100%;
+		height: 220px;
+		margin-top: 12px;
+		padding: 12px;
+		background-color: #EFE7D8;
+		border-radius: 4px;
+		font-family: monospace;
+		font-size: 12px;
+		color: #1C1A16;
+	}
+
+	.meta-row {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		margin-top: 8px;
+	}
+
+	.meta {
+		font-size: 11.5px;
+		color: #A9A292;
+	}
+
+	.savebtn {
+		flex-direction: row;
+		margin-top: 16px;
+		padding-top: 14px;
+		padding-bottom: 14px;
+		border-radius: 3px;
+		background-color: #1C1A16;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.savebtn-t {
+		font-size: 13px;
+		letter-spacing: 3px;
+		color: #F7F2E8;
+	}
+
+	.box {
+		margin-top: 16px;
+		padding: 14px;
+		border-radius: 4px;
+		border-width: 1px;
+	}
+
+	.box-err {
+		border-color: #B4553C;
+		background-color: #F3E4DC;
+	}
+
+	.box-ok {
+		border-color: #DCD4C4;
+		background-color: #EFE7D8;
+	}
+
+	.box-t {
+		font-size: 13px;
+		font-weight: bold;
+		color: #1C1A16;
+		margin-bottom: 8px;
+	}
+
+	.box-s {
+		font-size: 12px;
+		line-height: 18px;
+		color: #8A5A46;
+	}
+
+	.box-snip {
+		font-family: monospace;
+		font-size: 11px;
+		line-height: 17px;
+		color: #6B6656;
+		margin-top: 8px;
+	}
+
+	.box-hint {
+		font-size: 11px;
+		line-height: 17px;
+		color: #B98A2E;
+		margin-top: 4px;
+	}
+
+	.checks {
+		margin-top: 20px;
+	}
+
+	.checks-head {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		border-bottom-width: 1px;
+		border-color: #DCD4C4;
+		padding-bottom: 8px;
+	}
+
+	.checks-t {
+		font-size: 12px;
+		letter-spacing: 2px;
+		font-weight: bold;
+		color: #6B6656;
+	}
+
+	.checks-n {
+		font-size: 11px;
+		color: #A9A292;
+	}
+
+	.checkcard {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		margin-top: 10px;
+		padding: 13px 14px;
+		border-width: 1px;
+		border-radius: 4px;
+	}
+
+	.check-l {
+		flex: 1;
+		margin-right: 14px;
+	}
+
+	.check-title {
+		font-size: 13.5px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.check-desc {
+		font-size: 11px;
+		line-height: 17px;
+		color: #8A8375;
+		margin-top: 4px;
+	}
+
+	.checks-note {
+		font-size: 10.5px;
+		color: #B9B1A0;
+		margin-top: 8px;
+	}
+
+	.checkbox {
+		width: 20px;
+		height: 20px;
+		border-width: 1.5px;
+		border-radius: 3px;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+
+	.checkmark {
+		font-size: 13px;
+		color: #F7F2E8;
+	}
+
+	.kv {
+		flex-direction: row;
+		margin-top: 4px;
+	}
+
+	.kv-k {
+		width: 44px;
+		font-size: 12px;
+		color: #8A8375;
+	}
+
+	.kv-v {
+		flex: 1;
+		font-size: 12px;
+		line-height: 18px;
+		color: #1C1A16;
+	}
+
+	.pad {
+		height: 30px;
+	}
+</style>
