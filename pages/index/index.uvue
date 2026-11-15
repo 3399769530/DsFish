@@ -1,0 +1,1191 @@
+<template>
+	<view class="page">
+
+		<!-- 头部：标题 + 日期 -->
+		<view class="head" :style="'padding-top:' + headPad + 'px'">
+			<text class="title">摸鱼 Chat吧</text>
+			<text class="date">{{ today }}</text>
+		</view>
+		<view class="rule"></view>
+
+		<!-- 三个页签都装在这个容器里：切换时只改容器内的子节点，
+		     页面根节点的子节点顺序保持不变，悬浮 tab 永远在最后（在最上层） -->
+		<view class="panes">
+
+		<!-- ==================== 首页 ==================== -->
+		<view v-if="tab == 0" class="pane">
+
+			<!-- 状态行 -->
+			<view class="status">
+				<view class="dot" :style="'background-color:' + status.color"></view>
+				<text class="status-t">{{ status.line }}</text>
+				<view class="status-link" @click="onStatusTap">
+					<text class="status-link-t" :style="'color:' + status.linkColor">{{ status.link }}</text>
+					<view class="status-link-line" :style="'background-color:' + status.linkColor"></view>
+				</view>
+			</view>
+
+			<view class="section">
+				<text class="sec-t">最近会话</text>
+				<text class="sec-n">{{ countLabel(rows.length) }}</text>
+			</view>
+
+			<scroll-view class="list" scroll-y="true">
+				<view class="rows">
+					<view class="newchar" @click="onNewChat">
+						<dash-border :cols="dashCols" :rows="dashRows" color="#BDB3A1"></dash-border>
+						<text class="newchar-t">＋ 新建会话</text>
+					</view>
+
+					<view class="hair-top"></view>
+
+					<view v-for="c in rows" :key="c.id" class="r-wrap">
+						<view class="r" @click="openChat(c.id)" @longpress="onLongPress(c.id)">
+							<view class="ava">
+								<image v-if="c.image.length > 0" class="ava-img" :src="c.image" mode="aspectFill" @error="onChatImgErr(c.id)"></image>
+								<text v-else class="ava-t">{{ c.emoji }}</text>
+							</view>
+							<view class="r-main">
+								<view class="r-l1">
+									<text class="r-name">{{ c.name }}</text>
+									<text class="r-time">{{ c.timeLabel }}</text>
+								</view>
+								<text class="r-pv">{{ c.preview }}</text>
+							</view>
+						</view>
+						<view class="hair"></view>
+					</view>
+
+					<view v-if="rows.length == 0" class="empty">
+						<text class="empty-t">还没有会话</text>
+						<text class="empty-s">配置好 API，挑一个角色开始</text>
+					</view>
+
+					<view class="pad"></view>
+				</view>
+			</scroll-view>
+		</view>
+
+		<!-- ==================== 角色卡（占位，待定稿） ==================== -->
+		<view v-if="tab == 1" class="pane">
+			<view class="section section-flat">
+				<text class="sec-t">角色卡</text>
+				<text class="sec-n">{{ countLabel(chars.length) }}</text>
+			</view>
+
+			<scroll-view class="list" scroll-y="true">
+				<view class="rows">
+					<view class="newchar" @click="onNewChar">
+						<dash-border :cols="dashCols" :rows="dashRows" color="#BDB3A1"></dash-border>
+						<text class="newchar-t">＋ 新建角色卡</text>
+					</view>
+
+					<view class="hair-top"></view>
+
+					<view v-for="c in chars" :key="c.id" class="r-wrap">
+						<view class="r">
+							<view class="ava" @click="editChar(c.id)">
+								<image v-if="c.image.length > 0" class="ava-img" :src="c.image" mode="aspectFill" @error="onCharImgErr(c.id)"></image>
+								<text v-else class="ava-name">{{ c.avatar }}</text>
+							</view>
+							<view class="r-main">
+								<view class="r-l1">
+									<text class="r-name" @click="editChar(c.id)">{{ c.name }}</text>
+									<view class="go" @click="onCharChat(c.id)">
+										<text class="go-t">开聊</text>
+									</view>
+								</view>
+								<text class="r-pv" @click="editChar(c.id)">{{ c.preview }}</text>
+							</view>
+						</view>
+						<view class="hair"></view>
+					</view>
+
+					<view v-if="chars.length == 0" class="empty">
+						<text class="empty-t">还没有角色卡</text>
+						<text class="empty-s">点上面的「新建角色卡」，写一个人设就能开聊</text>
+					</view>
+
+					<!-- <view class="note">
+						<text class="note-t">列表显示的是系统提示词</text>
+						<text class="note-s">点卡片改人设，点「开聊」用这个角色开一段新会话。</text>
+					</view> -->
+					<!-- <view class="pad"></view> -->
+				</view>
+			</scroll-view>
+		</view>
+
+		<!-- ==================== 我的 ==================== -->
+		<view v-if="tab == 2" class="pane">
+			<scroll-view class="list" scroll-y="true">
+				<view class="rows">
+
+					<!-- 本机身份 -->
+					<view class="me">
+						<view class="me-ava" @click="onPickMeAvatar">
+							<image v-if="meAvatar.length > 0" class="me-img" :src="meAvatar" mode="aspectFill" @error="onMeImgErr"></image>
+							<text v-else class="me-ava-t">{{ avatarText(meName.length > 0 ? meName : "我") }}</text>
+						</view>
+						<view class="me-main">
+							<input class="me-input" :value="meName" :maxlength="16" placeholder="你的昵称"
+								placeholder-style="color:#B9B1A0" @input="onMeNameInput" />
+							<text class="me-sub" @click="onPickMeAvatar">{{ meAvatar.length > 0 ? '换张头像' : '点这里换个头像' }}</text>
+						</view>
+					</view>
+					<view class="hair"></view>
+
+					<!-- 当前接口 -->
+					<view class="section-inline">
+						<text class="sec-t">当前接口</text>
+					</view>
+					<view class="row-btn" @click="onStatusTap">
+						<view class="dotc" :style="'background-color:' + status.color"></view>
+						<text class="status-t">{{ status.line }}</text>
+						<text class="row-arrow">›</text>
+					</view>
+					<view class="hair"></view>
+
+					<!-- 统计 -->
+					<view class="stat-row">
+						<view class="stat-cell">
+							<text class="stat-n">{{ countLabel(stats.chats) }}</text>
+							<text class="stat-l">会话</text>
+						</view>
+						<view class="stat-cell" @click="onMemory">
+							<text class="stat-n">{{ countLabel(stats.memories) }}</text>
+							<text class="stat-l">记忆</text>
+						</view>
+						<view class="stat-cell">
+							<text class="stat-n">{{ countLabel(stats.chars) }}</text>
+							<text class="stat-l">角色卡</text>
+						</view>
+						<view class="stat-cell">
+							<text class="stat-n">{{ countLabel(stats.msgs) }}</text>
+							<text class="stat-l">消息</text>
+						</view>
+					</view>
+					<view class="hair"></view>
+
+					<!-- 数据 -->
+					<view class="section-inline">
+						<text class="sec-t">数据</text>
+						<!-- <text class="sec-n">只存在本机</text> -->
+					</view>
+					<view class="row-btn" @click="onExport">
+						<text class="row-main-t">导出备份</text>
+						<text class="row-sub-t">导出 对话/记忆</text>
+						<text class="row-arrow">›</text>
+					</view>
+					<view class="hair"></view>
+					<view class="row-btn" @click="onImport">
+						<text class="row-main-t">导入备份</text>
+						<text class="row-sub-t">导入 对话/记忆</text>
+						<text class="row-arrow">›</text>
+					</view>
+					<view class="hair"></view>
+					<view class="row-btn" @click="onMemory">
+						<text class="row-main-t">记忆管理</text>
+						<text class="row-sub-t">查看和编辑</text>
+						<text class="row-arrow">›</text>
+					</view>
+					<view class="hair"></view>
+					<view class="row-btn" @click="onWipe">
+						<text class="row-main-t danger">清空所有数据</text>
+						<text class="row-arrow">›</text>
+					</view>
+					<view class="hair"></view>
+
+				</view>
+			</scroll-view>
+		</view>
+		</view>
+
+		<!-- ==================== 悬浮底部 tab ==================== -->
+		<view class="tabbar-wrap">
+			<view class="tabbar">
+				<!-- 滑动的选中块 -->
+				<view class="indicator" :style="'width:' + tabW.toString() + 'px;transform: translateX(' + (tab * tabW).toString() + 'px)'"></view>
+				<view class="tab" @click="switchTab(0)">
+					<text class="tab-t" :style="tab == 0 ? 'color:#F7F2E8' : 'color:#8A8375'">首页</text>
+				</view>
+				<view class="tab" @click="switchTab(1)">
+					<text class="tab-t" :style="tab == 1 ? 'color:#F7F2E8' : 'color:#8A8375'">角色卡</text>
+				</view>
+				<view class="tab" @click="switchTab(2)">
+					<text class="tab-t" :style="tab == 2 ? 'color:#F7F2E8' : 'color:#8A8375'">我的</text>
+				</view>
+			</view>
+		</view>
+
+		<paper-sheet :visible="sheetOpen" :title="sheetTitle" :items="sheetItems" :dangerIndex="sheetDanger"
+			@pick="onSheetPick" @close="closeSheet"></paper-sheet>
+
+		<!-- 会话重命名：面板从顶部下拉、钉在屏幕顶端——键盘从底下弹永远碰不到它，
+		     不需要任何键盘高度处理 -->
+		<view v-if="renameOpen" class="ren-mask" :style="renShown ? 'opacity:1' : 'opacity:0'" @click="closeRename"></view>
+		<view v-if="renameOpen" class="ren-panel" :style="'padding-top:' + headPad.toString() + 'px;transform: translateY(' + (renShown ? '0px' : '-320px') + ')'">
+			<view class="ren-inner">
+				<view class="ren-head">
+					<text class="ren-title">换个名字</text>
+					<text class="ren-cancel" @click="closeRename">取消</text>
+				</view>
+				<view class="hair"></view>
+				<view class="ren-field">
+					<input class="ren-input" :value="renameText" :maxlength="20" placeholder="留空则恢复成角色名"
+						placeholder-style="color:#B9B1A0" :adjust-position="false" @input="onRenameInput" />
+				</view>
+				<view class="hair"></view>
+				<view class="ren-save" @click="saveRename">
+					<text class="ren-save-t">保存名字</text>
+				</view>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+	import { ChatRow, CharRow, Profile, StatusView, Me, Stats, getActiveProfile, emptyProfile, loadChats, loadChars, deleteChat, setChatTitle, duplicateChat, seedDemo, seedDefaultChat, buildChatRows, buildStatus, todayLabel, countLabel, truncate, avatarText, charDisplayOf, loadMe, saveMe, buildStats, exportAll, importAll, wipeAll, ImportResult } from '../../utils/store.uts'
+	import PaperSheet from '../../components/paper-sheet/paper-sheet.uvue'
+	import DashBorder from '../../components/dash-border/dash-border.uvue'
+	import { PickResult, pickAvatar, removeAvatarFile } from '../../utils/image.uts'
+	import { saveBackupFile, pickBackupFile, readBackupFile, fileNameOf, backupLastError } from '../../utils/backup-file.uts'
+	import { purgeDeleted, autoForget } from '../../utils/memory.uts'
+	export default {
+		components: {
+			PaperSheet,
+			DashBorder
+		},
+		data() {
+			return {
+				tab: 0,
+				headPad: 18,
+				today: '',
+				profile: emptyProfile() as Profile,
+				status: {
+					state: 0,
+					line: '',
+					color: '#B4553C',
+					link: '去配置',
+					linkColor: '#B4553C'
+				} as StatusView,
+				rows: [] as Array<ChatRow>,
+				meName: '',
+				meAvatar: '',
+				stats: { chats: 0, chars: 0, msgs: 0, memories: 0 } as Stats,
+				sheetOpen: false,
+				sheetTitle: '',
+				sheetItems: new Array<string>(),
+				sheetDanger: -1,
+				sheetChatId: '',
+				/** 重命名会话的输入层 */
+				renameOpen: false,
+				renShown: false,
+				renameChatId: '',
+				renameText: '',
+				sheetMode: 'chat',
+				importText: '',
+				/** 每个 tab 的宽度（按屏宽算），滑动块靠它位移 */
+				tabW: 114,
+				/** 虚线框：横边段数 / 竖边段数 */
+				dashCols: 38,
+				dashRows: 5,
+				chars: [] as Array<CharRow>
+			}
+		},
+		onLoad() {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 18
+				}
+				// tab 宽 = (屏宽 − 两侧 18 − 胶囊内边距 5×2) / 3
+				const ww = info.windowWidth
+				if (ww > 100) {
+					this.tabW = (ww - 46) / 3
+					// 虚线框：每段 5px + 约 4px 间隙
+					let cols = Math.floor((ww - 48) / 9)
+					if (cols < 8) {
+						cols = 8
+					}
+					if (cols > 90) {
+						cols = 90
+					}
+					this.dashCols = cols
+				}
+			} catch (e) {
+				// 取不到就用默认值
+			}
+			this.today = todayLabel()
+			this.refreshMe()
+			// 过期处理：60 天没引用的记忆进回收站，回收站超 3 天的真删
+			autoForget()
+			purgeDeleted()
+			seedDemo()
+			// 空列表时自动建默认会话（备注：防 Vite 缓存失效用）
+			seedDefaultChat()
+			this.refresh()
+		},
+		onShow() {
+			this.refresh()
+			this.refreshMe()
+		},
+		methods: {
+			refresh(): void {
+				// 角色列表：备注名优先显示
+				this.profile = getActiveProfile()
+				this.status = buildStatus(this.profile)
+				this.rows = buildChatRows(loadChats())
+				const list = loadChars()
+				const view: Array<CharRow> = []
+				for (let i = 0; i < list.length; i++) {
+					const c = list[i]
+					view.push({
+						id: c.id,
+						name: charDisplayOf(c),
+						avatar: avatarText(c.name),
+						preview: truncate(c.prompt.length > 0 ? c.prompt : '（没有填系统提示词）', 46),
+						userName: c.userName,
+						image: c.avatar != null ? c.avatar! : ''
+					} as CharRow)
+				}
+				this.chars = view
+			},
+			countLabel(n: number): string {
+				return countLabel(n)
+			},
+			avatarText(name: string): string {
+				return avatarText(name)
+			},
+			onChatImgErr(cid: string): void {
+				for (let i = 0; i < this.rows.length; i++) {
+					if (this.rows[i].id == cid) {
+						this.rows[i].image = ''
+					}
+				}
+			},
+			onCharImgErr(cid: string): void {
+				for (let i = 0; i < this.chars.length; i++) {
+					if (this.chars[i].id == cid) {
+						this.chars[i].image = ''
+					}
+				}
+			},
+			onMeImgErr(): void {
+				this.meAvatar = ''
+			},
+			refreshMe(): void {
+				const me = loadMe()
+				this.meName = me.name
+				this.meAvatar = me.avatar != null ? me.avatar! : ''
+				this.stats = buildStats()
+			},
+			onMeNameInput(e: InputEvent): void {
+				this.meName = e.detail.value
+				const me = loadMe()
+				me.name = e.detail.value
+				saveMe(me)
+			},
+			onPickMeAvatar(): void {
+				pickAvatar((r: PickResult) => {
+					// 取消选择就安静地什么都不做
+					if (!r.ok) {
+						return
+					}
+					if (this.meAvatar.length > 0 && this.meAvatar != r.path) {
+						removeAvatarFile(this.meAvatar)
+					}
+					this.meAvatar = r.path
+					const me = loadMe()
+					me.avatar = r.path
+					saveMe(me)
+				})
+			},
+			onExport(): void {
+				this.sheetMode = 'export'
+				this.sheetTitle = '备份方式'
+				this.sheetItems = ['分享 .json 文件（推荐）', '复制到剪贴板']
+				this.sheetDanger = -1
+				this.sheetOpen = true
+			},
+			doExportFile(): void {
+				const text = exportAll()
+				const path = saveBackupFile(text)
+				if (path.length == 0) {
+					const err = backupLastError()
+					uni.showToast({ title: '写文件失败：' + (err.length > 0 ? err.substring(0, 60) : '未知原因'), icon: 'none' })
+					return
+				}
+				uni.shareWithSystem({
+					type: 'file',
+					filePaths: [path],
+					success: () => {},
+					fail: () => {
+						uni.showToast({ title: '已存到应用目录，但系统分享没成功', icon: 'none' })
+					}
+				})
+			},
+			doExportCopy(): void {
+				const text = exportAll()
+				uni.setClipboardData({
+					data: text,
+					success: () => {
+						uni.showToast({ title: '已复制（太长的话建议用分享文件）', icon: 'none' })
+					},
+					fail: () => {
+						uni.showToast({ title: '复制失败', icon: 'none' })
+					}
+				})
+			},
+			onImport(): void {
+				this.sheetMode = 'import'
+				this.sheetTitle = '从哪儿导入'
+				this.sheetItems = ['选择 .json / .txt 文件', '粘贴备份文本']
+				this.sheetDanger = -1
+				this.sheetOpen = true
+			},
+			/** 读某个文件并弹出「确定导入」 */
+			startImportFrom(path: string): void {
+				const text = readBackupFile(path)
+				if (text.trim().length == 0) {
+					const why2 = backupLastError()
+					console.log('import: read failed, reason=' + why2)
+					uni.showToast({
+						title: why2.length > 0 ? '读取失败，详见控制台' : '这个文件读不出内容',
+						icon: 'none'
+					})
+					return
+				}
+				this.importText = text
+				this.sheetMode = 'import-confirm'
+				this.sheetTitle = '导入 ' + fileNameOf(path) + '？会覆盖本机数据'
+				this.sheetItems = ['确定导入']
+				this.sheetDanger = -1
+				this.sheetOpen = true
+			},
+			doImportFromFile(): void {
+				pickBackupFile((path: string) => {
+					if (path.length == 0) {
+						// 取消 或者 选择器不可用：都给个反馈，别静默
+						const why = backupLastError()
+						console.log('import: no path, reason=' + why)
+						uni.showToast({ title: why.length > 0 ? why : '没选到文件', icon: 'none' })
+						return
+					}
+					console.log('import: picked ' + path)
+					this.startImportFrom(path)
+				})
+			},
+			onMemory(): void {
+				uni.navigateTo({ url: '/pages/memory/memory' })
+			},
+			onWipe(): void {
+				this.sheetMode = 'wipe'
+				this.sheetTitle = '清空自己创建的数据？（示例角色卡、会话和 API 配置保留）'
+				this.sheetItems = ['确认清空']
+				this.sheetDanger = 0
+				this.sheetOpen = true
+			},
+			onAbout(): void {
+				// uni.showModal({
+				// 	title: '摸鱼 Chat v1.0.0',
+				// 	content: 'uni-app x 写的聊天客户端：自带 API Key，直连 DeepSeek / OpenAI / Ollama。\n数据与 Key 都存在本机，没有云端。',
+				// 	showCancel: false,
+				// 	confirmText: '知道了'
+				// })
+			},
+			switchTab(i: number): void {
+				this.tab = i
+				if (i == 2) {
+					this.refreshMe()
+				}
+			},
+			onStatusTap(): void {
+				uni.navigateTo({
+					url: '/pages/config/config'
+				})
+			},
+			onNewChat(): void {
+				this.tab = 1
+				uni.showToast({ title: '挑一个角色，点「开聊」', icon: 'none' })
+			},
+			openChat(cid: string): void {
+				uni.navigateTo({
+					url: '/pages/chat/chat?chatId=' + cid
+				})
+			},
+			onCharChat(cid: string): void {
+				uni.navigateTo({
+					url: '/pages/chat/chat?charId=' + cid
+				})
+			},
+			onNewChar(): void {
+				uni.navigateTo({
+					url: '/pages/char/char'
+				})
+			},
+			editChar(cid: string): void {
+				uni.navigateTo({
+					url: '/pages/char/char?id=' + cid
+				})
+			},
+			onLongPress(cid: string): void {
+				this.sheetMode = 'chat'
+				this.sheetChatId = cid
+				this.sheetTitle = '这个会话'
+				this.sheetItems = ['重命名会话', '创建副本', '删除会话']
+				this.sheetDanger = 2
+				this.sheetOpen = true
+			},
+			/** 打开重命名输入层 */
+			openRename(cid: string): void {
+				const c = loadChats()
+				let cur = ''
+				for (let i = 0; i < c.length; i++) {
+					if (c[i].id == cid) {
+						cur = c[i].title != null ? c[i].title! : ''
+					}
+				}
+				this.renameChatId = cid
+				this.renameText = cur
+				this.renameOpen = true
+				// 先以「在上方屏外」渲染一帧，下一帧再下拉到位，transition 才能生效
+				this.renShown = false
+				setTimeout(() => {
+					this.renShown = true
+				}, 24)
+			},
+			closeRename(): void {
+				this.renameOpen = false
+				this.renShown = false
+				uni.hideKeyboard()
+			},
+			onRenameInput(e: InputEvent): void {
+				this.renameText = e.detail.value
+			},
+			saveRename(): void {
+				setChatTitle(this.renameChatId, this.renameText)
+				this.renameOpen = false
+				this.renShown = false
+				uni.hideKeyboard()
+				this.refresh()
+				uni.showToast({ title: '已改名', icon: 'none' })
+			},
+			closeSheet(): void {
+				this.sheetOpen = false
+			},
+			onSheetPick(i: number): void {
+				this.sheetOpen = false
+				if (this.sheetMode == 'export') {
+					if (i == 0) {
+						this.doExportFile()
+					} else if (i == 1) {
+						this.doExportCopy()
+					}
+					return
+				}
+				if (this.sheetMode == 'import') {
+					if (i == 0) {
+						this.doImportFromFile()
+					} else if (i == 1) {
+						uni.navigateTo({ url: '/pages/restore/restore' })
+					}
+					return
+				}
+				if (this.sheetMode == 'import-confirm') {
+					if (i == 0) {
+						const r = importAll(this.importText)
+						if (r.ok) {
+							this.importText = ''
+							this.refresh()
+							this.refreshMe()
+							uni.showToast({ title: '导入完成', icon: 'none' })
+						} else {
+							uni.showToast({ title: r.message, icon: 'none' })
+						}
+					}
+					return
+				}
+				if (this.sheetMode == 'wipe') {
+					if (i == 0) {
+						wipeAll()
+						this.refresh()
+						this.refreshMe()
+						uni.showToast({ title: '已清空（示例角色、会话、API 配置保留）', icon: 'none' })
+					}
+					return
+				}
+				// 长按会话的菜单
+				if (this.sheetMode == 'chat') {
+					if (i == 0) {
+						this.openRename(this.sheetChatId)
+					} else if (i == 1) {
+						const nid = duplicateChat(this.sheetChatId)
+						this.sheetChatId = ''
+						this.refresh()
+						if (nid.length > 0) {
+							uni.showToast({ title: '已创建副本', icon: 'none' })
+						}
+					} else if (i == 2) {
+						deleteChat(this.sheetChatId)
+						this.sheetChatId = ''
+						this.refresh()
+						uni.showToast({ title: '已删除', icon: 'none' })
+					}
+				}
+			}
+		}
+	}
+</script>
+
+<style>
+	.page {
+		flex: 1;
+		flex-direction: column;
+		background-color: #F7F2E8;
+		position: relative;
+		overflow: hidden;
+	}
+
+	.panes {
+		flex: 1;
+		flex-direction: column;
+		/* 底部给悬浮 tab 让出空间：内容不会压到 tab 下面，
+		   即使原生层叠顺序出意外，点击也不会被 scroll-view 吃掉 */
+		padding-bottom: 74px;
+	}
+
+	.pane {
+		flex: 1;
+		flex-direction: column;
+	}
+
+	/* ---------- 头部 ---------- */
+	.head {
+		flex-direction: row;
+		align-items: flex-end;
+		justify-content: space-between;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 12px;
+	}
+
+	.title {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 27px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #1C1A16;
+	}
+
+	.date {
+		font-family: monospace;
+		font-size: 11px;
+		letter-spacing: 1px;
+		color: #8A8375;
+		padding-bottom: 5px;
+	}
+
+	.rule {
+		height: 2px;
+		background-color: #1C1A16;
+		margin-left: 24px;
+		margin-right: 24px;
+	}
+
+	/* ---------- 状态行 ---------- */
+	.status {
+		flex-direction: row;
+		align-items: center;
+		padding: 12px 24px 0 24px;
+	}
+
+	.dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 3px;
+		margin-right: 7px;
+	}
+
+	.status-t {
+		flex: 1;
+		font-size: 12px;
+		letter-spacing: 0.4px;
+		color: #6B6656;
+	}
+
+	.status-link {
+		flex-direction: column;
+		align-items: center;
+	}
+
+	.status-link-t {
+		font-size: 12px;
+		letter-spacing: 0.4px;
+	}
+
+	.status-link-line {
+		height: 1px;
+		width: 100%;
+		margin-top: 2px;
+	}
+
+	/* ---------- 分区标题 ---------- */
+	.section {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding: 26px 24px 6px 24px;
+	}
+
+	.section-flat {
+		padding-top: 16px;
+	}
+
+	.sec-t {
+		font-size: 11px;
+		letter-spacing: 3px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.sec-n {
+		font-family: monospace;
+		font-size: 11px;
+		letter-spacing: 1px;
+		color: #A9A292;
+	}
+
+	/* ---------- 列表 ---------- */
+	.list {
+		flex: 1;
+	}
+
+	.rows {
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 16px;
+	}
+
+	.hair-top {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.hair {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.r-wrap {
+		flex-direction: column;
+	}
+
+	.r {
+		flex-direction: row;
+		align-items: flex-start;
+		padding-top: 15px;
+		padding-bottom: 15px;
+	}
+
+	.ava {
+		width: 38px;
+		height: 38px;
+		border-radius: 7px;
+		background-color: #EDE5D5;
+		align-items: center;
+		justify-content: center;
+		overflow: hidden;
+	}
+
+	.ava-img {
+		width: 38px;
+		height: 38px;
+	}
+
+	.ava-t {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 18px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.ava-name {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 18px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.newchar {
+		position: relative;
+		margin-bottom: 16px;
+		padding-top: 11px;
+		padding-bottom: 11px;
+		flex-direction: row;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.newchar-t {
+		font-size: 13px;
+		letter-spacing: 1px;
+		flex-shrink: 0;
+		color: #6B6656;
+	}
+
+	.r-main {
+		flex: 1;
+		margin-left: 13px;
+	}
+
+	.r-l1 {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.r-name {
+		font-size: 16px;
+		font-weight: bold;
+		letter-spacing: 0.3px;
+		color: #1C1A16;
+	}
+
+	.r-time {
+		font-family: monospace;
+		font-size: 11px;
+		letter-spacing: 0.5px;
+		color: #A9A292;
+	}
+
+	.r-pv {
+		font-size: 13px;
+		line-height: 20px;
+		color: #6B6656;
+		margin-top: 5px;
+	}
+
+	/* ---------- 空态 / 说明 ---------- */
+	.empty {
+		align-items: center;
+		padding-top: 40px;
+		padding-bottom: 10px;
+	}
+
+	.empty-t {
+		font-size: 15px;
+		letter-spacing: 0.5px;
+		color: #4B463C;
+	}
+
+	.empty-s {
+		font-size: 12px;
+		color: #A9A292;
+		margin-top: 8px;
+	}
+
+	.note {
+		margin-top: 22px;
+	}
+
+	.note-t {
+		font-size: 13px;
+		font-weight: bold;
+		letter-spacing: 0.5px;
+		color: #4B463C;
+	}
+
+	.note-s {
+		font-size: 12px;
+		line-height: 19px;
+		color: #8A8375;
+		margin-top: 6px;
+	}
+
+	.go {
+		padding-left: 12px;
+		padding-right: 12px;
+		padding-top: 6px;
+		padding-bottom: 6px;
+		border-width: 1px;
+		border-style: solid;
+		border-color: #1C1A16;
+		border-radius: 3px;
+	}
+
+	.go-t {
+		font-size: 11px;
+		letter-spacing: 1px;
+		color: #1C1A16;
+	}
+
+	.me {
+		flex-direction: row;
+		align-items: center;
+		padding-top: 16px;
+		padding-bottom: 16px;
+	}
+
+	.me-ava {
+		width: 52px;
+		height: 52px;
+		border-radius: 9px;
+		background-color: #EDE5D5;
+		align-items: center;
+		justify-content: center;
+		overflow: hidden;
+	}
+
+	.me-img {
+		width: 52px;
+		height: 52px;
+	}
+
+	.me-ava-t {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 22px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.me-main {
+		flex: 1;
+		margin-left: 13px;
+	}
+
+	.me-input {
+		height: 30px;
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 19px;
+		font-weight: bold;
+		letter-spacing: 0.3px;
+		color: #1C1A16;
+	}
+
+	.me-sub {
+		font-size: 11.5px;
+		color: #B4553C;
+		margin-top: 4px;
+	}
+
+	/* ---------- 我的：行 ---------- */
+	.section-inline {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding-top: 20px;
+		padding-bottom: 6px;
+	}
+
+	.row-btn {
+		flex-direction: row;
+		align-items: center;
+		padding-top: 14px;
+		padding-bottom: 14px;
+	}
+
+	.dotc {
+		width: 6px;
+		height: 6px;
+		border-radius: 3px;
+		margin-right: 8px;
+	}
+
+	.row-main-t {
+		flex: 1;
+		font-size: 15px;
+		color: #1C1A16;
+		letter-spacing: 0.2px;
+	}
+
+	.row-sub-t {
+		font-size: 11.5px;
+		color: #A9A292;
+		margin-left: 8px;
+	}
+
+	.row-arrow {
+		font-size: 17px;
+		color: #C4BBA8;
+		margin-left: 6px;
+	}
+
+	.danger {
+		color: #B4553C;
+	}
+
+	.stat-row {
+		flex-direction: row;
+		align-items: center;
+		padding-top: 16px;
+		padding-bottom: 16px;
+	}
+
+	.stat-cell {
+		flex: 1;
+		align-items: center;
+	}
+
+	.stat-n {
+		font-family: monospace;
+		font-size: 20px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.stat-l {
+		font-size: 11px;
+		letter-spacing: 1px;
+		color: #A9A292;
+		margin-top: 3px;
+	}
+
+	.foot-note {
+		font-size: 11px;
+		line-height: 17px;
+		color: #B9B1A0;
+		margin-top: 18px;
+	}
+
+	.pad {
+		height: 24px;
+	}
+
+	/* ---------- 重命名面板：绝对钉屏幕顶部、从上方下拉入场；键盘在底下永远挡不到 ---------- */
+	.ren-mask {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(28, 26, 22, 0.32);
+		transition-property: opacity;
+		transition-duration: 180ms;
+		transition-timing-function: ease-out;
+		z-index: 90;
+	}
+
+	.ren-panel {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		flex-shrink: 0;
+		background-color: #F7F2E8;
+		border-bottom-left-radius: 10px;
+		border-bottom-right-radius: 10px;
+		transition-property: transform;
+		transition-duration: 260ms;
+		transition-timing-function: ease-out;
+		/* 悬浮 tab 是 z-index 5 的绝对层，面板要盖在一切之上 */
+		z-index: 95;
+	}
+
+	.ren-inner {
+		flex-direction: column;
+		padding-bottom: 18px;
+	}
+
+	.ren-head {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding: 14px 24px;
+	}
+
+	.ren-title {
+		font-size: 11px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.ren-cancel {
+		font-size: 12px;
+		color: #A9A292;
+	}
+
+	.ren-field {
+		padding: 6px 24px;
+	}
+
+	.ren-input {
+		height: 42px;
+		font-size: 15px;
+		color: #1C1A16;
+	}
+
+	.ren-save {
+		margin: 16px 24px 0 24px;
+		padding-top: 13px;
+		padding-bottom: 13px;
+		background-color: #1C1A16;
+		border-radius: 3px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.ren-save-t {
+		font-size: 13px;
+		letter-spacing: 3px;
+		color: #F7F2E8;
+	}
+
+	/* ---------- 悬浮底部 tab ---------- */
+	.tabbar-wrap {
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		padding-left: 18px;
+		padding-right: 18px;
+		padding-bottom: 18px;
+		/* 浮在页签内容之上；但要比弹层（z-index 100）低 */
+		z-index: 5;
+	}
+
+	.tabbar {
+		position: relative;
+		flex-direction: row;
+		height: 56px;
+		/* 半透明纸色 + 细描边，模拟悬浮磨砂片 */
+		background-color: rgba(247, 242, 232, 0.9);
+		border-width: 1px;
+		border-style: solid;
+		border-color: rgba(28, 26, 22, 0.1);
+		border-radius: 28px;
+		padding: 5px;
+		align-items: center;
+		overflow: hidden;
+	}
+
+	/* 会滑动的选中块 */
+	.indicator {
+		position: absolute;
+		left: 5px;
+		top: 5px;
+		height: 44px;
+		border-radius: 22px;
+		background-color: #1C1A16;
+		transition-property: transform;
+		transition-duration: 220ms;
+		transition-timing-function: ease-out;
+	}
+
+	.tab {
+		flex: 1;
+		height: 44px;
+		border-radius: 22px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.tab-t {
+		font-size: 11.5px;
+		letter-spacing: 3px;
+		transition-property: color;
+		transition-duration: 180ms;
+		transition-timing-function: ease-out;
+	}
+</style>

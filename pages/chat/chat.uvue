@@ -1,0 +1,2456 @@
+<template>
+<view class="page" :style="'height:' + pageH.toString() + 'px'">
+
+		<!-- 头部整块（标题 + 分隔线 + 记忆提示），不参与滚动 -->
+		<view class="headwrap">
+			<view id="elhead" class="head" :style="'padding-top:' + headPad + 'px'">
+				<view class="back" @click="goBack">
+					<text class="back-t">←</text>
+				</view>
+				<view class="ava">
+					<image v-if="avatarImg.length > 0" class="ava-img" :src="avatarImg" mode="aspectFill" @error="onAvatarErr"></image>
+					<text v-else class="ava-t">{{ avatarText(displayName()) }}</text>
+				</view>
+				<view class="head-main">
+					<text class="name">{{ displayName() }}</text>
+					<view class="prov" @click="openPicker">
+						<view class="dot" :style="'background-color:' + providerDot"></view>
+						<text class="prov-t">{{ providerLine }}</text>
+						<text class="prov-caret">▾</text>
+					</view>
+				</view>
+				<view v-if="affOn" class="aff" @click="openAffinity">
+					<text class="aff-heart">♥</text>
+					<text class="aff-v">{{ affValue }}</text>
+				</view>
+				<view class="more" @click="onMore">
+					<text class="more-t">⋯</text>
+				</view>
+			</view>
+			<view class="rule"></view>
+		</view>
+
+		<!-- 消息 -->
+		<scroll-view class="msgs" scroll-y="true" :scroll-into-view="scrollTarget" :scroll-with-animation="true"
+			:upper-threshold="40" @scrolltoupper="onReachTop">
+			<view class="msgs-inner">
+				<view v-if="renderFrom > 0" class="more-tip">
+					<text class="more-tip-t">↑ 上滑加载更早的聊天</text>
+				</view>
+				<view v-for="m in rows" :key="m.id" :id="'m' + m.id" class="msg-item">
+					<view v-if="m.showTime" class="time-sep">
+						<text class="time-t">{{ m.timeLabel }}</text>
+					</view>
+
+					<view v-if="m.narration" class="narration">
+						<text class="narration-t">{{ m.text }}</text>
+					</view>
+
+					<view v-else-if="m.pro" class="pro-sep">
+						<text class="pro-sep-t">— {{ displayName() }} 主动开口 —</text>
+					</view>
+
+					<view v-else-if="m.mine" class="line line-end">
+						<view class="bubble bubble-mine" :style="bubbleStyle(m)">
+							<image v-if="m.image.length > 0" class="msg-img" :src="m.image" mode="aspectFill" @click="previewImg(m.image)"></image>
+							<text v-if="m.text.length > 0" class="bubble-t bubble-t-mine">{{ m.text }}</text>
+						</view>
+						<view class="ava-sm ava-sm-mine">
+							<image v-if="meAvatar.length > 0" class="ava-sm-img" :src="meAvatar" mode="aspectFill" @error="onMeErr"></image>
+							<text v-else class="ava-sm-t">{{ avatarText(meName.length > 0 ? meName : "我") }}</text>
+						</view>
+					</view>
+
+					<view v-else class="line line-start">
+						<view class="ava-sm">
+							<image v-if="avatarImg.length > 0" class="ava-sm-img" :src="avatarImg" mode="aspectFill" @error="onAvatarErr"></image>
+							<text v-else class="ava-sm-t">{{ avatarText(displayName()) }}</text>
+						</view>
+						<view class="bubble-col">
+							<view v-if="showMood() && m.mood.length > 0" class="mood-chip">
+								<text class="mood-t" :style="'color:' + moodColorOf(m.mood)">{{ m.mood }}</text>
+							</view>
+							<view class="bubble" :style="'max-width:' + bubbleMax.toString() + 'px'">
+								<image v-if="m.image.length > 0" class="msg-img" :src="m.image" mode="aspectFill" @click="previewImg(m.image)"></image>
+								<text v-if="m.text.length > 0" class="bubble-t">{{ m.text }}</text>
+							</view>
+						</view>
+					</view>
+				</view>
+
+				<view v-if="dicing" class="narration">
+					<text class="narration-t">（正在掷骰…）</text>
+				</view>
+
+				<view v-if="sending" class="line line-start">
+					<view class="ava-sm">
+						<image v-if="avatarImg.length > 0" class="ava-sm-img" :src="avatarImg" mode="aspectFill" @error="onAvatarErr"></image>
+						<text v-else class="ava-sm-t">{{ avatarText(displayName()) }}</text>
+					</view>
+					<view class="bubble" :style="'max-width:' + bubbleMax.toString() + 'px'">
+						<text class="bubble-t">{{ streamingText.length > 0 ? streamingText : '· · ·' }}</text>
+					</view>
+				</view>
+
+				<view :id="scrollFlip ? 'endA' : 'endB'" class="pad"></view>
+			</view>
+		</scroll-view>
+
+		<!-- 错误提示 -->
+		<view v-if="errorText.length > 0" class="err-bar">
+			<text class="err-t">{{ errorText }}</text>
+			<text class="err-retry" @click="retry">重试</text>
+		</view>
+
+		<!-- 没配置时的提示 -->
+		<view v-if="needConfig" class="err-bar">
+			<text class="err-t">还没配置 API，先去填一个 Key</text>
+			<text class="err-retry" @click="toConfig">去配置</text>
+		</view>
+
+		<!-- 输入栏 -->
+		<view id="elinbar" class="inputbar">
+			<view class="imgbtn" @click="onPickImage">
+				<text class="imgbtn-t">＋</text>
+			</view>
+			<view class="imgbtn dicebtn" @click="onDice">
+				<text class="imgbtn-t">骰</text>
+			</view>
+			<input class="input" :value="draft" placeholder="说点什么…" placeholder-style="color:#B9B1A0"
+				:maxlength="2000" confirm-type="send" :adjust-position="false" @input="onInput" @confirm="send" />
+			<view class="sendbtn" :style="sending ? 'background-color:#B9B1A0' : 'background-color:#1C1A16'" @click="onSendTap">
+				<text class="sendbtn-t">{{ sending ? '停止' : '发送' }}</text>
+			</view>
+		</view>
+
+		<!-- 选择接口：遮罩渐入 + 面板上滑 -->
+		<fade-sheet :visible="pickerOpen" @close="closePicker">
+			<view class="sheet-head">
+				<text class="sheet-title">用哪家接口聊</text>
+				<text class="sheet-close" @click="closePicker">关闭</text>
+			</view>
+			<view class="hair"></view>
+
+			<view v-for="o in providerOptions" :key="o.id" class="opt" @click="pickProvider(o.id)">
+				<view class="opt-main">
+					<text class="opt-name">{{ o.label }}</text>
+					<text class="opt-model">{{ o.model }}</text>
+				</view>
+				<text class="opt-state" :style="'color:' + o.color">{{ o.stateText }}</text>
+				<text v-if="o.active" class="opt-check">✓</text>
+			</view>
+
+			<view class="hair"></view>
+			<view class="sheet-foot" @click="toConfig">
+				<text class="sheet-foot-t">去配置 Key / 改模型</text>
+			</view>
+		</fade-sheet>
+
+		<!-- 隐藏 canvas：把本地图片转成 base64 给多模态模型 -->
+		<canvas id="imgcv" canvas-id="imgcv" class="imgcv"></canvas>
+
+		<!-- 请求内容查看：遮罩与面板平级 -->
+		<view v-if="reqOpen" class="dump-layer">
+			<view class="dump-mask" @click="reqOpen = false"></view>
+			<view class="dump-panel">
+				<view class="dump-head">
+					<text class="dump-title">上次请求的内容</text>
+					<text class="dump-copy" @click="copyDump">复制</text>
+					<text class="dump-close" @click="reqOpen = false">关闭</text>
+				</view>
+				<scroll-view class="dump-body" scroll-y="true">
+					<text class="dump-text">{{ reqDump }}</text>
+				</scroll-view>
+			</view>
+		</view>
+
+		<!-- 图片预览 -->
+		<view v-if="imgPreview.length > 0" class="img-mask" @click="closePreview">
+			<image class="img-big" :src="imgPreview" mode="aspectFit"></image>
+			<text class="img-hint">点任意处关闭</text>
+		</view>
+
+		<!-- 好感度面板：遮罩渐入 + 面板上滑 -->
+		<fade-sheet :visible="affOpen" @close="closeAffinity">
+			<!-- <view class="handle-wrap">
+				<view class="handle"></view>
+			</view> -->
+			<view class="aff-head">
+				<text class="aff-title">好感度</text>
+				<text class="aff-close" @click="closeAffinity">关闭</text>
+			</view>
+			<view class="hair"></view>
+
+			<view class="aff-body">
+				<view class="aff-row">
+					<text class="aff-num">{{ affValue }}</text>
+					<text class="aff-level" :style="'color:' + affColor">{{ affLabel }}</text>
+				</view>
+				<view class="bar-wrap">
+					<view class="bar" :style="'width:' + affValue + '%;background-color:' + affColor"></view>
+				</view>
+				<text class="aff-tip">{{ affTip }}</text>
+				<text class="aff-note">由角色在每次回复里自己打分（±1~8），只存在这条会话里。</text>
+			</view>
+
+			<!-- <view class="aff-cancel" @click="closeAffinity">
+				<text class="aff-cancel-t">知道了</text>
+			</view> -->
+		</fade-sheet>
+
+		<!-- 自定义纸质弹出层 -->
+		<paper-sheet :visible="sheetOpen" :title="sheetTitle" :items="sheetItems" :dangerIndex="sheetDanger"
+			@pick="onSheetPick" @close="closeSheet"></paper-sheet>
+	</view>
+</template>
+
+<script lang="uts">
+	import { Msg, Chat, Character, BubbleRow, ProviderOption, Profile, loadMsgs, saveMsgs, findChat, findChar, createChatFor, touchChat, clearMsgs, resetChatToInitial, deleteChat, buildBubbleRows, getProfile, getActiveProvider, findProvider, buildProviderOptions, setChatProvider, seedDemo, avatarText, composePrompt, newChar, loadMe, imageRule, affinityOf, isAffinityOn, isTimeOn, isMemHintOn, isProactiveOn, isProPassOn, proMinSecOf, proMaxSecOf, chatTitleOf, summaryOf, summaryCountOf, setChatSummary, contextBudgetOf, setChatAffinity, applyAffinityDecay, fmtCtxStamp, DICE_EVENTS } from '../../utils/store.uts'
+	import { moodRule, parseMood, moodColor, isKnownMood, MOOD_ENABLED } from '../../utils/mood.uts'
+	import { StreamHandlers, streamChat, abortChat, buildRequest, summarize, simpleChat, ChatMsg } from '../../utils/api.uts'
+	import { planSplit, estTokens } from '../../utils/context.uts'
+	import { AffinityParse, parseAffinity, levelOf, nextLevelLabel, clampAffinity, affinityRule, AFF_START } from '../../utils/affinity.uts'
+	import { memoryRule, memoryTools, runMemoryTool } from '../../utils/memory.uts'
+	import { lastSplitIndex, squeezeSpace } from '../../utils/reply.uts'
+	import PaperSheet from '../../components/paper-sheet/paper-sheet.uvue'
+	import FadeSheet from '../../components/fade-sheet/fade-sheet.uvue'
+	import { PickResult, pickImage, saveThumbData, loadThumbData } from '../../utils/image.uts'
+	import { optStr } from '../../utils/opt.uts'
+
+	/** 工具调用最多跑几轮（超过就强制不带工具，保证一定给出正文） */
+	const MEM_ROUND_MAX: number = 5
+	/** 一次最多渲染多少条消息（往上翻再往前扩） */
+	const PAGE_SIZE: number = 30
+	/** 三个记忆工具的 schema 大概占多少 token，算预算时留出来 */
+	const TOOLS_TOKEN_COST: number = 450
+
+	/**
+	 * 校验 canvas 产出的 dataURL。
+	 * 注意：必须是模块级普通函数——canvas 回调跑在子线程，
+	 * 子线程里碰一下 this（哪怕是调方法）都会踩坏响应式依赖表，
+	 * 之后主线程再读消息数组就会抛 trackEffects / ConcurrentModification 崩溃
+	 */
+	function emitDataUrlOut(data: string, done: (d: string) => void): void {
+		if (data.length > 20 && data.substring(0, 5) == 'data:') {
+			done(data)
+		} else {
+			done('')
+		}
+	}
+
+	/** 判断 pass 标记时要忽略的字符：空白、各种括号、标点（模型很爱加） */
+	const PASS_DROPS: string = ' \n\r\t　[]【】()（）「」『』<>《》。，,.！？!?~～…、·`'
+	/** pass 标记的全部合法写法（小写比较） */
+	const PASS_WORDS: Array<string> = ['pass', '跳过', '跳过本次']
+
+	/** 剥掉空白和括号，只留正文小写 */
+	function stripPassChars(s: string): string {
+		const low = s.toLowerCase()
+		let t = ''
+		for (let i = 0; i < low.length; i++) {
+			const c = low.substring(i, i + 1)
+			if (PASS_DROPS.indexOf(c) < 0) {
+				t += c
+			}
+		}
+		return t
+	}
+
+	/** 主动消息的「这次不想说」标记：模型只回 [pass] 时界面静默吞掉 */
+	function isPassOnly(s: string): boolean {
+		const t = stripPassChars(s)
+		for (let i = 0; i < PASS_WORDS.length; i++) {
+			if (t == PASS_WORDS[i]) {
+				return true
+			}
+		}
+		return false
+	}
+
+	/** 流式半成品：这段文本是否还可能是个 pass 标记（含空串），是就先别提交气泡 */
+	function couldBePass(s: string): boolean {
+		const t = stripPassChars(s)
+		if (t.length == 0) {
+			return true
+		}
+		for (let i = 0; i < PASS_WORDS.length; i++) {
+			const w = PASS_WORDS[i]
+			if (w.length >= t.length && w.substring(0, t.length) == t) {
+				return true
+			}
+		}
+		return false
+	}
+
+	/**
+	 * 把一段代码投递回主线程执行。
+	 * canvas / 图片解码的回调在子线程，直接改响应式数据会踩坏依赖表；
+	 * setTimeout 不能保证回到主线程（可能还在定时器线程里跑），用 runOnUiThread 才稳
+	 */
+	function runOnMain(fn: () => void): void {
+		// #ifdef APP-ANDROID
+		try {
+			const act = UTSAndroid.getUniActivity()
+			if (act != null) {
+				act!.runOnUiThread(() => {
+					fn()
+				})
+				return
+			}
+		} catch (e) {
+			// 拿不到 Activity 就直接执行
+		}
+		// #endif
+		fn()
+	}
+
+	export default {
+		components: {
+			PaperSheet,
+			FadeSheet
+		},
+		data() {
+			return {
+				headPad: 18,
+				chatId: '',
+				chat: {
+					id: '',
+					charId: '',
+					charName: '聊天',
+					charEmoji: '🐟',
+					lastText: '',
+					lastTime: 0
+				} as Chat,
+				char: newChar() as Character,
+				msgs: [] as Array<Msg>,
+				rows: [] as Array<BubbleRow>,
+				avatarImg: '',
+				meName: '',
+				meAvatar: '',
+				affValue: 20,
+				affLabel: '',
+				affColor: '#8A8375',
+				affTip: '',
+				affOpen: false,
+				affOn: true,
+				timeOn: true,
+				rawText: '',
+				retriedEmpty: false,
+				dicing: false,
+				imgPreview: '',
+				lastFinish: '',
+				pid: '',
+				providerLine: '',
+				pageH: 99999,
+				winH: 99999,
+				kbH: 0,
+				/** 气泡最大宽度：按屏宽算，保证左右两边的内边线对齐（onLoad 里更新） */
+				bubbleMax: 270,
+				providerDot: '#A9A292',
+				providerOptions: [] as Array<ProviderOption>,
+				// 上下文状态（调试用）
+				reqDump: '',
+				reqOpen: false,
+				pickerOpen: false,
+				sheetOpen: false,
+				sheetTitle: '',
+				sheetItems: new Array<string>(),
+				sheetDanger: -1,
+				/** 当前弹层是哪个用途：menu=更多菜单，reset=重置确认 */
+				sheetMode: 'menu',
+				/** 这条会话是否显示记忆过程的小字 */
+				memHintOn: true,
+				/** 本轮已经变成消息的字数（流式边收边切用） */
+				shownLen: 0,
+				/** 一边流式一边切段用的游标 */
+				turnFirstId: 0,
+				/** 一次渲染多少条；往上翻按页往前扩 */
+				renderFrom: 0,
+				visibleCount: 0,
+				/** 断点在末尾时的等待计时器（等下一段标点补齐，比如「……」） */
+				flushTimer: -1,
+				/** 本轮请求用的 system 和消息列表（dump 和工具轮复用） */
+				reqSys: '',
+				reqList: [] as Array<Msg>,
+				/** 用户点名记忆时强制第一轮调用的工具名（空=不强制） */
+				reqForceTool: '',
+				/** 服务商拒绝 tools 后只降级一次，避免死循环 */
+				toolDegraded: false,
+				draft: '',
+				sending: false,
+				/** 主动消息：定时器 id / 连续未回复次数 / 这一轮是不是主动请求 / 开关（onShow 里读） */
+				proTimer: -1 as number | null,
+				proStrikes: 0,
+				proPending: false,
+				proOn: true,
+				/** 是否允许模型用 [pass] 跳过这次主动发言 */
+				proPassOn: true,
+				/** 页面已销毁：在途的主动请求结算后不许再掐表 */
+				proGone: false,
+				streamingText: '',
+				scrollFlip: false,
+				errorText: '',
+				needConfig: false,
+				scrollTarget: ""
+			}
+		},
+		onLoad(options: OnLoadOptions) {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 10
+				}
+				this.winH = info.windowHeight
+				this.pageH = info.windowHeight
+				// 气泡最大宽度：屏宽 − 两侧内边距 36 − 两侧头像列 84，
+				// 这样左右气泡的内边线对齐，窄屏也不会探出去
+				const ww = info.windowWidth
+				if (ww > 100) {
+					this.bubbleMax = ww - 120
+				}
+			} catch (e) {
+				// 用默认值
+			}
+			// #ifdef APP-ANDROID
+			// 关掉系统对键盘的一切处理（ADJUST_NOTHING=48）：不上推、不压缩，
+			// 键盘高度完全由下面的回调 + pageH 收缩接管
+			try {
+				const act0 = UTSAndroid.getUniActivity()
+				if (act0 != null) {
+					act0!.getWindow().setSoftInputMode(48)
+				}
+			} catch (e0) {
+				// 忽略
+			}
+			// 键盘弹出时把页面高度收缩 kb 像素，输入框就顶在键盘上方
+			// 注意：回调参数类型是 any，用 JSON 转成 UTSJSONObject 再取字段
+			try {
+				uni.onKeyboardHeightChange((res) => {
+					let kb = 0
+					try {
+						const o = JSON.parse<UTSJSONObject>(JSON.stringify(res))
+						if (o != null) {
+							const h = o!.getNumber('height')
+							if (h != null) {
+								kb = h!
+							}
+						}
+					} catch (e2) {
+						// 解析失败按 0 处理
+					}
+					this.kbH = kb
+					this.pageH = this.winH - kb
+					if (kb > 0) {
+						setTimeout(() => {
+							runOnMain(() => {
+								this.scrollToBottom()
+							})
+						}, 100)
+					}
+				})
+			} catch (e1) {
+				// 忽略
+			}
+			// #endif
+			seedDemo()
+
+			const cid = optStr(options, 'chatId')
+			if (cid.length > 0) {
+				const c = findChat(cid)
+				if (c != null) {
+					this.chat = c!
+					this.chatId = c!.id
+				}
+			}
+			if (this.chatId.length == 0) {
+				const chid = optStr(options, 'charId')
+				if (chid.length > 0) {
+					const ch = findChar(chid)
+					if (ch != null) {
+						const created = createChatFor(ch!)
+						this.chat = created
+						this.chatId = created.id
+					}
+				}
+			}
+
+			const ch2 = findChar(this.chat.charId)
+			if (ch2 != null) {
+				this.char = ch2!
+			}
+			this.avatarImg = this.chat.charAvatar != null ? this.chat.charAvatar! : ''
+			this.affOn = isAffinityOn(this.chat)
+			this.timeOn = isTimeOn(this.chat)
+			this.memHintOn = isMemHintOn(this.chat)
+			const decayed = this.affOn ? applyAffinityDecay(this.chat) : affinityOf(this.chat)
+			this.chat.affinity = decayed
+			this.syncAffinity()
+			const me0 = loadMe()
+			this.meName = me0.name
+			this.meAvatar = me0.avatar != null ? me0.avatar! : ''
+			this.msgs = loadMsgs(this.chatId)
+			this.backfillThumbs()
+			// 只渲染最后 PAGE_SIZE 条，往上翻再加载更早的
+			this.renderFrom = this.msgs.length > PAGE_SIZE ? this.msgs.length - PAGE_SIZE : 0
+
+			// 这条会话用哪家接口：会话里记了就按它，没记就用当前默认并写回
+			let pid = getActiveProvider()
+			if (this.chat.provider != null && this.chat.provider!.length > 0) {
+				pid = this.chat.provider!
+			}
+			this.pid = pid
+			if (this.chatId.length > 0) {
+				setChatProvider(this.chatId, pid)
+			}
+			this.refreshProvider()
+
+			this.sync()
+			this.checkConfig()
+			this.scrollToBottom()
+		},
+		onShow() {
+			if (this.chatId.length == 0) {
+				return
+			}
+			// 先重新读会话（开关/头像/称呼都在里面），再算衰减
+			const c = findChat(this.chatId)
+			if (c != null) {
+				this.chat = c!
+				this.avatarImg = c!.charAvatar != null ? c!.charAvatar! : ''
+			}
+			this.affOn = isAffinityOn(this.chat)
+			this.timeOn = isTimeOn(this.chat)
+			this.memHintOn = isMemHintOn(this.chat)
+			// 主动消息：重进页面重新计时，未回复计数清零
+			this.proOn = isProactiveOn(this.chat)
+			this.proPassOn = isProPassOn(this.chat)
+			this.proStrikes = 0
+			this.armProactive()
+			const decayed2 = this.affOn ? applyAffinityDecay(this.chat) : affinityOf(this.chat)
+			this.chat.affinity = decayed2
+			this.syncAffinity()
+			const me = loadMe()
+			this.meName = me.name
+			this.meAvatar = me.avatar != null ? me.avatar! : ''
+		},
+		onUnload() {
+			this.proGone = true
+			if (this.proTimer != null) {
+				clearTimeout(this.proTimer!)
+				this.proTimer = null
+			}
+			abortChat()
+		},
+		/**
+		 * 安卓实体返回键 / 顶部返回：正在回复时先拦下来问一句
+		 * 自己调 navigateBack 时 from 是 navigateBack，直接放行，避免死循环
+		 */
+		onBackPress(options: OnBackPressOptions): boolean | null {
+			if (this.sending && options.from != 'navigateBack') {
+				this.askLeave()
+				return true
+			}
+			return false
+		},
+		methods: {
+			avatarText(name: string): string {
+				return avatarText(name)
+			},
+			/** 顶部显示名：自定义会话名优先，else 角色名 */
+			displayName(): string {
+				return chatTitleOf(this.chat)
+			},
+			/** 气泡内联样式：宽度上限 + 纯图片时去掉底色和内边距 */
+			bubbleStyle(m: BubbleRow): string {
+				const base = 'max-width:' + this.bubbleMax.toString() + 'px'
+				if (m.image.length > 0 && m.text.length == 0) {
+					return base + ';background-color:#00000000;padding:0'
+				}
+				return base
+			},
+			/** 情绪系统开关：用带返回类型的方法暴露给模板，避免模板里对 any 做布尔运算 */
+			showMood(): boolean {
+				return MOOD_ENABLED
+			},
+			onAvatarErr(): void {
+				this.avatarImg = ''
+			},
+			onMeErr(): void {
+				this.meAvatar = ''
+			},
+			syncAffinity(): void {
+				const v = affinityOf(this.chat)
+				this.affValue = v
+				const lv = levelOf(v)
+				this.affLabel = lv.label
+				this.affColor = lv.color
+				const nx = nextLevelLabel(v)
+				if (nx.length > 0) {
+					this.affTip = '再涨 ' + (lv.max - v).toString() + ' 点进入「' + nx + '」'
+				} else if (v >= 100) {
+					this.affTip = '已经满值了'
+				} else {
+					this.affTip = '已是最高档「' + lv.label + '」，满值还差 ' + (100 - v).toString() + ' 点'
+				}
+			},
+			openAffinity(): void {
+				this.syncAffinity()
+				this.affOpen = true
+			},
+			closeAffinity(): void {
+				this.affOpen = false
+			},			refreshProvider(): void {
+				const p = getProfile(this.pid)
+				const preset = findProvider(p.provider)
+				let label = p.provider
+				if (preset != null) {
+					label = preset!.label
+				}
+				this.providerLine = label + ' · ' + p.model
+				let color = '#A9A292'
+				if (p.provider == 'ollama') {
+					color = '#2F5D50'
+				} else if (p.apiKey.trim().length > 0) {
+					if (p.lastError.length > 0) {
+						color = '#B4553C'
+					} else if (p.verified) {
+						color = '#2F5D50'
+					} else {
+						color = '#B98A2E'
+					}
+				}
+				this.providerDot = color
+				this.providerOptions = buildProviderOptions(this.pid)
+			},
+			openPicker(): void {
+				this.providerOptions = buildProviderOptions(this.pid)
+				this.pickerOpen = true
+			},
+			closePicker(): void {
+				this.pickerOpen = false
+			},
+			pickProvider(id: string): void {
+				this.pid = id
+				if (this.chatId.length > 0) {
+					setChatProvider(this.chatId, id)
+				}
+				this.pickerOpen = false
+				this.refreshProvider()
+				this.checkConfig()
+				this.errorText = ''
+			},
+			checkConfig(): void {
+				const p = getProfile(this.pid)
+				this.needConfig = p.apiKey.trim().length == 0 && p.provider != 'ollama'
+			},
+			/** 存储里图片只留了缩略图路径：把 base64 读回来，模型重启后还能看图 */
+			backfillThumbs(): void {
+				for (let i = 0; i < this.msgs.length; i++) {
+					const m = this.msgs[i]
+					const thumb = m.imageThumb
+					if (thumb != null && thumb!.length > 0 && (m.imageData == null || m.imageData!.length == 0)) {
+						const mid = m.id
+						loadThumbData(thumb!, (data: string) => {
+							if (data.length > 0) {
+								runOnMain(() => {
+									for (let k = 0; k < this.msgs.length; k++) {
+										if (this.msgs[k].id == mid) {
+											this.msgs[k].imageData = data
+											break
+										}
+									}
+								})
+							}
+						})
+					}
+				}
+			},
+			/** 只把 visible 区间渲染成行，往上翻再往前扩 */
+			sync(): void {
+				this.visibleCount = this.msgs.length - this.renderFrom
+				if (this.visibleCount < 0) {
+					this.visibleCount = 0
+				}
+				const visible = this.sliceMsgs(this.msgs, this.renderFrom, this.msgs.length)
+				this.rows = buildBubbleRows(visible)
+			},
+			/** 滚到顶部：再往前加载一页更早的 */
+			onReachTop(): void {
+				if (this.renderFrom <= 0) {
+					return
+				}
+				// 记下当前最上面那条，加载完把它滚回原来的位置，避免页面跳动
+				let anchorId = ''
+				if (this.rows.length > 0) {
+					anchorId = this.rows[0].id
+				}
+				let next = this.renderFrom - PAGE_SIZE
+				if (next < 0) {
+					next = 0
+				}
+				this.renderFrom = next
+				this.sync()
+				if (anchorId.length > 0) {
+					this.scrollTarget = ''
+					setTimeout(() => {
+						runOnMain(() => {
+							this.scrollTarget = 'm' + anchorId
+						})
+					}, 30)
+				}
+			},
+			persist(): void {
+				saveMsgs(this.chatId, this.msgs)
+				// 列表预览取最后一条「可见」消息，别把主动消息的指令漏出去
+				let li = this.msgs.length - 1
+				while (li >= 0 && this.msgs[li].hidden == true) {
+					li = li - 1
+				}
+				if (li >= 0) {
+					const last = this.msgs[li]
+					touchChat(this.chatId, last.text, last.time)
+				}
+			},
+			scrollToBottom(): void {
+				if (this.rows.length == 0) {
+					return
+				}
+				const lastId = this.rows[this.rows.length - 1].id
+				// 先清空再赋值：值没变化时 scroll-into-view 不会重新触发滚动
+				this.scrollTarget = ''
+				setTimeout(() => {
+					runOnMain(() => {
+						this.scrollTarget = 'm' + lastId
+					})
+				}, 50)
+			},
+			onInput(e: InputEvent): void {
+				this.draft = e.detail.value
+			},
+			onPickImage(): void {
+				if (this.sending) {
+					return
+				}
+				pickImage((r: PickResult) => {
+					// 取消选择就安静地什么都不做
+					if (!r.ok) {
+						return
+					}
+					this.sendImage(r.path)
+				})
+			},
+			sendImage(path: string): void {
+				const p = getProfile(this.pid)
+				if (p.apiKey.trim().length == 0 && p.provider != 'ollama') {
+					this.needConfig = true
+					this.errorText = ''
+					return
+				}
+				// 先把图片转成 base64（多模态要用），转不出来就退回文字占位
+				this.toDataUrl(path, (data: string) => {
+					// 这个回调可能跑在 canvas 子线程：一切响应式数据都要回主线程再改
+					runOnMain(() => {
+						const now = Date.now()
+						this.msgs.push({ id: now, text: '', time: now, mine: true, image: path, imageData: data, aff: this.affOn ? affinityOf(this.chat) : -1 } as Msg)
+						this.errorText = ''
+						this.needConfig = false
+						this.sync()
+						this.persist()
+						this.scrollToBottom()
+						this.proStrikes = 0
+						this.armProactive()
+						this.request()
+						// 缩略图另存一份永久文件：JSON 里只留路径，重启后还能把图还给模型
+						if (data.length > 20) {
+							saveThumbData(data, 't' + now.toString(), (p: string) => {
+								if (p.length > 0) {
+									runOnMain(() => {
+										for (let k = 0; k < this.msgs.length; k++) {
+											if (this.msgs[k].id == now) {
+												this.msgs[k].imageThumb = p
+												this.persist()
+												break
+											}
+										}
+									})
+								}
+							})
+						}
+					})
+				})
+			},
+			/** 用隐藏 canvas 把图片缩到 480px 以内并转成 jpeg base64 */
+			toDataUrl(path: string, done: (data: string) => void): void {
+				uni.getImageInfo({
+					src: path,
+					success: (info) => {
+						let w = info.width
+						let h = info.height
+						if (w <= 0 || h <= 0) {
+							done('')
+							return
+						}
+						const max = 480
+						if (w > max || h > max) {
+							if (w >= h) {
+								h = Math.floor(h * 1.0 * max / w * 1.0)
+								w = max
+							} else {
+								w = Math.floor(w * 1.0 * max / h * 1.0)
+								h = max
+							}
+						}
+						// 路径 A：createCanvasContextAsync（App 端文档推荐）
+						try {
+							uni.createCanvasContextAsync({
+								id: 'imgcv',
+								success: (ctx) => {
+									try {
+										const c2 = ctx.getContext('2d')
+										const img = ctx.createImage()
+										if (c2 == null) {
+											done('')
+											return
+										}
+										img.onload = () => {
+											try {
+												c2.clearRect(0, 0, 480, 480)
+												c2.drawImage(img, 0, 0, w, h)
+												// 这里跑在 canvas 子线程：只调模块级函数，别碰 this
+												emitDataUrlOut(ctx.toDataURL('image/jpeg', 0.72), done)
+											} catch (e2) {
+												done('')
+											}
+										}
+										// #ifdef APP
+										img.onerror = () => {
+											done('')
+										}
+										// #endif
+										img.src = path
+									} catch (e1) {
+										done('')
+									}
+								},
+								fail: () => {
+									done('')
+								}
+							})
+						} catch (e0) {
+							done('')
+						}
+					},
+					fail: () => {
+						done('')
+					}
+				})
+			},
+			previewImg(path: string): void {
+				this.imgPreview = path
+			},
+			copyDump(): void {
+				uni.setClipboardData({
+					data: this.reqDump,
+					success: () => {
+						uni.showToast({ title: '已复制', icon: 'none' })
+					},
+					fail: () => {
+						uni.showToast({ title: '复制失败', icon: 'none' })
+					}
+				})
+			},
+			closePreview(): void {
+				this.imgPreview = ''
+			},
+			onSendTap(): void {
+				if (this.sending) {
+					abortChat()
+					this.sending = false
+					this.scrollToBottom()
+					return
+				}
+				this.send()
+			},
+			send(): void {
+				if (this.sending) {
+					return
+				}
+				const text = this.draft.trim()
+				if (text.length == 0) {
+					return
+				}
+				const p = getProfile(this.pid)
+				if (p.apiKey.trim().length == 0 && p.provider != 'ollama') {
+					this.needConfig = true
+					this.errorText = ''
+					return
+				}
+				const now = Date.now()
+				const affSnap = this.affOn ? affinityOf(this.chat) : -1
+				this.msgs.push({ id: now, text: text, time: now, mine: true, aff: affSnap } as Msg)
+				this.draft = ''
+				this.errorText = ''
+				this.needConfig = false
+				this.sync()
+				this.persist()
+				this.scrollToBottom()
+				// 用户开口了：未回复计数清零，重新掐表
+				this.proStrikes = 0
+				this.armProactive()
+				this.request()
+			},
+			request(): void {
+				this.requestWith('')
+			},
+			/** hint 会追加到系统提示词末尾，用来「补一句正常回复」 */
+			requestWith(hint: string): void {
+				const p = getProfile(this.pid)
+				this.sending = true
+				this.streamingText = ''
+				this.rawText = ''
+				// 一边流式一边切段用的游标
+				this.shownLen = 0
+				this.turnFirstId = 0
+				// 每次请求都重置上一次的判定和错误提示，否则会残留
+				this.lastFinish = ''
+				this.errorText = ''
+				this.toolDegraded = false
+				const baseSys = this.buildSys(hint)
+
+				// 上下文预算：满了就先压缩（保留最近 10% 原文）
+				const budget = contextBudgetOf(p)
+				const sumText = summaryOf(this.chat)
+				const from0 = summaryCountOf(this.chat)
+				const plan = planSplit(this.msgs, estTokens(baseSys) + TOOLS_TOKEN_COST, estTokens(sumText), budget, from0)
+
+				if (!plan.need) {
+					this.startStream(p, baseSys, sumText, from0)
+					return
+				}
+
+				this.streamingText = '正在压缩上下文…'
+				this.followBottom()
+				const old = this.sliceMsgs(this.msgs, from0, plan.cut)
+				summarize(p, sumText, old, (ok: boolean, text: string) => {
+					let newSum = sumText
+					let newFrom = plan.cut
+					if (ok && text.trim().length > 0) {
+						newSum = text.trim()
+						setChatSummary(this.chatId, newSum, newFrom)
+						this.chat.summary = newSum
+						this.chat.summaryCount = newFrom
+						uni.showToast({ title: '已把 ' + old.length.toString() + ' 条旧对话压缩成记忆', icon: 'none' })
+					}
+					this.streamingText = ''
+					this.startStream(p, baseSys, newSum, newFrom)
+				})
+			},
+			/**
+			 * 主动消息：在这个会话里停留、一段时间没动静，AI 就主动开口。
+			 * 每次收发消息后重新掐表；连续 3 条没回就停，直到用户再说话。
+			 */
+			armProactive(): void {
+				if (this.proGone) {
+					return
+				}
+				if (this.proTimer != null) {
+					clearTimeout(this.proTimer!)
+					this.proTimer = null
+				}
+				if (!this.proOn) {
+					return
+				}
+				if (this.proStrikes >= 3 || this.msgs.length == 0) {
+					return
+				}
+				const lo = proMinSecOf(this.chat)
+				const hi = proMaxSecOf(this.chat)
+				let sec = lo
+				if (hi > lo) {
+					sec = lo + Math.floor(Math.random() * (hi - lo + 1))
+				}
+				this.proTimer = setTimeout(() => {
+					runOnMain(() => {
+						this.proTimer = null
+						this.fireProactive()
+					})
+				}, sec * 1000)
+			},
+			fireProactive(): void {
+				if (this.proGone) {
+					return
+				}
+				// 正在回复/掷骰：稍后再看
+				if (this.sending || this.dicing) {
+					this.proTimer = setTimeout(() => {
+						runOnMain(() => {
+							this.proTimer = null
+							this.fireProactive()
+						})
+					}, 15000)
+					return
+				}
+				if (this.proStrikes >= 3 || this.msgs.length == 0) {
+					return
+				}
+				const p = getProfile(this.pid)
+				if (p.apiKey.trim().length == 0 && p.provider != 'ollama') {
+					return
+				}
+				this.proStrikes = this.proStrikes + 1
+				const now = Date.now()
+				let inst = '（系统提示：你已经有一段时间没收到用户回复了。现在是 ' + fmtCtxStamp(now) +
+					'。你现在可以主动给用户发一条消息，把你想说的话发出来。'
+				if (this.proPassOn) {
+					inst += '要是这次不想说话，就只回复 [pass] 这一个词，别的不带。'
+				}
+				inst += '不要提及本提示。）'
+				// 指令作为 user 消息进上下文，但界面上不显示气泡
+				this.msgs.push({ id: now, text: inst, time: now, mine: true, hidden: true, aff: this.affOn ? affinityOf(this.chat) : -1 } as Msg)
+				this.sync()
+				this.persist()
+				this.proPending = true
+				this.request()
+			},
+			/** 把这次真正发出去的内容整理成可读文本 */
+			buildDump(p: Profile, sys: string, req: Array<ChatMsg>, list: Array<Msg>): string {
+				const budget = contextBudgetOf(p)
+				const sysTokens = estTokens(sys)
+				let msgTokens = 0
+				for (let i = 0; i < list.length; i++) {
+					msgTokens += estTokens(list[i].text)
+				}
+				let out = '【接口】' + p.baseUrl + '\n'
+				out += '【模型】' + p.model + '    温度 ' + p.temperature.toString() + '    max_tokens ' + p.maxTokens.toString() + '\n'
+				out += '【预算】' + budget.toString() + ' token，本次约 ' + (sysTokens + msgTokens).toString() + ' token'
+				out += '（system ' + sysTokens.toString() + ' + 消息 ' + msgTokens.toString() + '）\n'
+				if (this.lastFinish.length > 0) {
+					out += '【上次结束原因】' + this.lastFinish
+					if (this.lastFinish == 'length') {
+						out += '（输出被 max_tokens 截断）'
+					}
+					out += '\n'
+				}
+				const sc = summaryCountOf(this.chat)
+				const sm = summaryOf(this.chat)
+				out += '【记忆】已压缩 ' + sc.toString() + ' 条，摘要 ' + sm.length.toString() + ' 字\n'
+				out += '【裁剪】本次发送 ' + list.length.toString() + ' 条'
+				if (this.chat.summaryCount != null && this.chat.summaryCount! > 0) {
+					out += '（前 ' + this.chat.summaryCount!.toString() + ' 条已压缩进摘要）'
+				}
+				out += '\n\n'
+				out += '════ system（= messages[0]，只发送一次）════\n' + sys + '\n\n'
+				out += '════ messages（' + req.length.toString() + ' 条）════\n'
+				for (let i = 0; i < req.length; i++) {
+					const role = req[i].role
+					const c = req[i].content
+					const tcs = req[i].toolCalls
+					if (tcs != null && tcs!.length > 0) {
+						let names = ''
+						for (let k = 0; k < tcs!.length; k++) {
+							const fn = tcs![k].getJSON('function')
+							const nm = fn != null ? fn!.getString('name') : null
+							const ag = fn != null ? fn!.getString('arguments') : null
+							if (k > 0) {
+								names += '；'
+							}
+							names += (nm != null ? nm! : '?') + '(' + (ag != null ? ag! : '') + ')'
+						}
+						out += '[assistant] （调用工具）' + names + '\n'
+						continue
+					}
+					if (typeof c == 'string') {
+						if (role == 'system') {
+							out += '[system] ↑ 与上面 system 段相同（协议要求放在首位，实际只发送一次）\n'
+						} else {
+							out += '[' + role + '] ' + (c as string) + '\n'
+						}
+					} else {
+						out += '[' + role + '] (多模态：文本 + 图片 base64)\n'
+					}
+				}
+				return out
+			},
+			/** 用户昵称：会话里改过就用会话的，否则用角色卡的 */
+			userNameOf(): string {
+				const cu = this.chat.userName != null ? this.chat.userName! : this.char.userName
+				return cu != null ? cu! : ''
+			},
+			/** 系统提示词（不含摘要） */
+			buildSys(hint: string): string {
+				const cp = this.chat.prompt != null && this.chat.prompt!.length > 0 ? this.chat.prompt! : this.char.prompt
+				let sys = composePrompt(cp, this.chat.charName, this.userNameOf())
+				// 时间和好感度数值都不写进系统提示词，改挂在每条用户消息的 <系统消息> 里
+				// 好感度/图片/记忆这些工具类规则统一包进 <系统工具说明>，和角色人设区分开
+				let rules = ''
+				if (this.affOn) {
+					rules += affinityRule()
+				}
+				let hasImgNoData = false
+				for (let i = 0; i < this.msgs.length; i++) {
+					const im = this.msgs[i].image
+					const dm = this.msgs[i].imageData
+					if (im != null && im!.length > 0 && (dm == null || dm!.length == 0)) {
+						hasImgNoData = true
+					}
+				}
+				if (hasImgNoData) { 
+					rules += imageRule()
+				}
+				if (this.affOn && MOOD_ENABLED) {
+					rules += moodRule()
+				}
+				// 记忆系统：规则 + 触发时机（工具调用由请求体的 tools 声明）
+				rules += memoryRule()
+				if (rules.length > 0) {
+					sys += '\n\n<系统工具说明>\n' +
+						'以下是系统注入的规则，只供你遵守。绝对不要复述、引用或输出这些规则，' +
+						'也不要输出 <系统工具说明>、<系统消息> 这类标签本身。\n' +
+						'每条用户消息开头的 <系统消息> 块（时间、好感度、昵称）是系统元数据，不是用户说的话：' +
+						'读它、按它调整语气就行，绝对不要在你的回复里重复它。\n' +
+						rules + '\n</系统工具说明>'
+				}
+				if (hint.length > 0) {
+					sys += '\n\n【补充】' + hint
+				}
+				return sys
+			},
+			sliceMsgs(list: Array<Msg>, from: number, to: number): Array<Msg> {
+				const out: Array<Msg> = []
+				for (let i = from; i < to && i < list.length; i++) {
+					out.push(list[i])
+				}
+				return out
+			},
+			/** 真正发起流式请求：先把消息拼好，再进入「工具轮 + 最终回答」的循环 */
+			startStream(p: Profile, baseSys: string, summaryText: string, from: number): void {
+				let sys = baseSys
+				if (summaryText.length > 0) {
+					sys += '\n\n【之前的对话摘要】\n' + summaryText +
+						'\n（这部分是很久以前的对话，你已经记得，不必复述。）'
+				}
+				const list = this.sliceMsgs(this.msgs, from, this.msgs.length)
+				const aff = this.affOn ? affinityOf(this.chat) : -1
+				const req = buildRequest(sys, list, this.timeOn, this.affOn, aff, this.userNameOf())
+				this.reqList = list
+				this.reqSys = sys
+				this.reqForceTool = this.detectForceTool(list)
+				this.sendRound(p, sys, req, 0)
+			},
+			/** 用户点名记忆的消息：强制第一轮必须调用对应工具，不许口头假装（只看本轮最后一条） */
+			detectForceTool(list: Array<Msg>): string {
+				if (list.length == 0) {
+					return ''
+				}
+				const last = list[list.length - 1]
+				if (!last.mine || last.hidden == true) {
+					return ''
+				}
+				const t = last.text
+				if (t.indexOf('记一下') >= 0 || t.indexOf('记住') >= 0 ||
+					t.indexOf('帮我记') >= 0 || t.indexOf('别忘') >= 0) {
+					return 'memory_add'
+				}
+				if (t.indexOf('来着') >= 0 || t.indexOf('还记得') >= 0 ||
+					t.indexOf('我说过') >= 0 || t.indexOf('上次') >= 0) {
+					return 'memory_query'
+				}
+				return ''
+			},
+			/**
+			 * 跑一轮请求：带工具时最多 5 轮，第 5 轮强制不带工具保证收敛
+			 * 每轮拿到 tool_calls 就本地执行、把结果按 role=tool 回传，再继续下一轮
+			 */
+			sendRound(p: Profile, sys: string, reqMsgs: Array<ChatMsg>, round: number): void {
+				const useTools = round < MEM_ROUND_MAX
+				const tools = useTools ? memoryTools() : null
+				// 强制只在第一轮生效，工具结果回传后恢复正常
+				const force = round == 0 ? this.reqForceTool : ''
+				this.reqDump = this.buildDump(p, sys, reqMsgs, this.reqList)
+				this.rawText = ''
+				this.shownLen = 0
+				this.streamingText = ''
+				streamChat(p, reqMsgs, {
+					onDelta: (piece: string) => {
+						this.rawText += piece
+						// 有新内容进来，取消上一次的等待
+						if (this.flushTimer >= 0) {
+							clearTimeout(this.flushTimer)
+							this.flushTimer = -1
+						}
+						// 不再是「一个字一个字往上顶」，而是一句说完就变成一条消息
+						this.emitReady(false)
+						this.followBottom()
+					},
+					onToolCalls: (calls: Array<UTSJSONObject>, text: string) => {
+						this.handleToolCalls(p, sys, reqMsgs, round, calls, text)
+					},
+					onDone: (full: string, wasAborted: boolean) => {
+						this.finishRound(full, wasAborted)
+					},
+					onFinish: (reason: string) => {
+						this.lastFinish = reason
+					},
+					onError: (msg: string) => {
+						// 有的服务商/模型不支持 tools：降级成普通对话重跑这一轮，别把用户卡死
+						if (useTools && !this.toolDegraded && this.isToolRejected(msg)) {
+							this.toolDegraded = true
+							this.sendRound(p, sys, reqMsgs, MEM_ROUND_MAX)
+							return
+						}
+						this.sending = false
+						this.streamingText = ''
+						this.rawText = ''
+						// 主动请求失败：不报错条、不算未回复，重新掐表等下次
+						if (this.proPending) {
+							this.proPending = false
+							this.proStrikes = this.proStrikes - 1
+							if (this.proStrikes < 0) {
+								this.proStrikes = 0
+							}
+							this.armProactive()
+							return
+						}
+						this.errorText = msg
+						this.armProactive()
+					}
+				} as StreamHandlers, tools, force)
+			},
+			/** 报错是不是「不支持 tools / function calling」 */
+			isToolRejected(msg: string): boolean {
+				const low = msg.toLowerCase()
+				return low.indexOf('tool') >= 0 || low.indexOf('function') >= 0 || low.indexOf('函数') >= 0
+			},
+			/** 执行模型要求的工具，然后把结果回传继续请求 */
+			handleToolCalls(p: Profile, sys: string, reqMsgs: Array<ChatMsg>, round: number,
+				calls: Array<UTSJSONObject>, text: string): void {
+				// 协议要求：assistant 的 tool_calls 必须原样带上，再逐条回 tool 结果
+				reqMsgs.push({
+					role: 'assistant',
+					content: text.length > 0 ? text : '',
+					toolCalls: calls
+				} as ChatMsg)
+				let note = ''
+				for (let i = 0; i < calls.length; i++) {
+					const call = calls[i]
+					const idv = call.getString('id')
+					const id = idv != null ? idv! : ''
+					let name = ''
+					let args = '{}'
+					const fn = call.getJSON('function')
+					if (fn != null) {
+						const nv = fn!.getString('name')
+						if (nv != null) {
+							name = nv!
+						}
+						const av = fn!.getString('arguments')
+						if (av != null) {
+							args = av!
+						}
+					}
+					const result = runMemoryTool(name, args, this.chatId, this.chat.charName)
+					const addFull = name == 'memory_add' && result.indexOf('"full":true') >= 0
+					const addDup = name == 'memory_add' && result.indexOf('"duplicate":true') >= 0
+					const addIdle = name == 'memory_add' && result.indexOf('"changed":false') >= 0
+					if (addFull) {
+						// 记忆满了：明确提示用户去清理，别让模型以为存上了
+						uni.showToast({ title: '记忆已满 500 条，去「记忆管理」清理一些', icon: 'none' })
+					}
+					reqMsgs.push({
+						role: 'tool',
+						content: result,
+						toolCallId: id
+					} as ChatMsg)
+					if (name == 'memory_query') {
+						note = '（翻了下记忆）'
+					} else if (name == 'memory_add') {
+						if (addFull) {
+							note = '（记忆满了，没能记下）'
+						} else if (addIdle) {
+							note = ''   // 什么都没变：完全不提示
+						} else if (addDup) {
+							note = '（补充进已有的记忆）'
+						} else {
+							note = '（记下了）'
+						}
+					} else if (name == 'memory_remove') {
+						note = '（忘掉了）'
+					}
+				}
+				console.log('mem hint -> ' + (note.length > 0 ? note : 'none'))
+				// 下一轮开始前，先在回复气泡里留一行「正在翻记忆」的小字，
+				// 让用户知道模型在做什么；等正文开始流式输出就会被覆盖
+				this.streamingText = ''
+				this.rawText = ''
+				const tip = this.memHintOn && note.length > 0 ? note : ''
+				if (tip.length > 0) {
+					this.streamingText = tip
+					this.followBottom()
+				}
+				setTimeout(() => {
+					runOnMain(() => {
+						this.sendRound(p, sys, reqMsgs, round + 1)
+					})
+				}, tip.length > 0 ? 700 : 0)
+			},
+			/**
+			 * 流式边收边切：攒到一个句末标点就立刻把这一句变成一条消息
+			 * final=true 时把剩下的半句也发出去（模型说完了）
+			 */
+			emitReady(final: boolean): void {
+				this.emitChunk(final, false)
+			},
+			/**
+			 * 真正的切片逻辑
+			 * force=true 时即使断点正好在末尾也切（等了一小会儿还没有新内容才会这样）
+			 */
+			emitChunk(final: boolean, force: boolean): void {
+				const cleaned = this.displayText(this.rawText)
+				if (cleaned.length <= this.shownLen) {
+					return
+				}
+				const rest = cleaned.substring(this.shownLen)
+				let cut = -1
+				if (final) {
+					cut = rest.length
+				} else {
+					const idx = lastSplitIndex(rest)
+					if (idx > 0) {
+						if (idx < rest.length || force) {
+							cut = idx
+						} else {
+							// 断点正好在末尾：句号 / 换行是"不会延长"的，立刻切；
+							// 「…！？」可能是「……」「！！」的前半截，等一小会儿
+							const lastCh = rest.substring(rest.length - 1, rest.length)
+							if (lastCh == '。' || lastCh == '\n' || lastCh == '\r') {
+								cut = idx
+							}
+						}
+					}
+					if (cut <= 0 && rest.length >= 90) {
+						// 一直没有句末标点：硬切一段，别让用户干等
+						cut = 60
+					}
+					if (cut <= 0) {
+						this.streamingText = '· · ·'
+						if (!force) {
+							if (this.flushTimer >= 0) {
+								clearTimeout(this.flushTimer)
+							}
+							this.flushTimer = setTimeout(() => {
+								runOnMain(() => {
+									this.flushTimer = -1
+									this.emitChunk(false, true)
+								})
+							}, 350)
+						}
+						return
+					}
+				}
+				if (cut <= 0) {
+					return
+				}
+				// 连续空白（尤其是空行）压成一个空格
+				const chunk = squeezeSpace(rest.substring(0, cut))
+				// 主动轮护栏：目前的文本还可能是 pass 标记（比如 [pass] 后面跟了换行），
+				// 先扣住不提交气泡，等流结束由 finishRound 判定吞掉还是放行
+				if (this.proPending && couldBePass(squeezeSpace(cleaned))) {
+					this.streamingText = '· · ·'
+					return
+				}
+				this.shownLen = this.shownLen + cut
+				if (chunk.length > 0) {
+					const t = Date.now()
+					if (this.turnFirstId == 0) {
+						this.turnFirstId = t
+					}
+					this.msgs.push({ id: t, text: chunk, time: t, mine: false } as Msg)
+					this.sync()
+					this.persist()
+				}
+				this.streamingText = ''
+			},
+			/** 一轮结束：把残余刷出去，再做好感/情绪结算 */
+			finishRound(full: string, wasAborted: boolean): void {
+				this.sending = false
+				if (this.flushTimer >= 0) {
+					clearTimeout(this.flushTimer)
+					this.flushTimer = -1
+				}
+				const moodParsed = parseMood(full)
+				const parsed = parseAffinity(moodParsed.text)
+				const show = parsed.text.trim()
+				const mood = (MOOD_ENABLED && isKnownMood(moodParsed.mood)) ? moodParsed.mood : ''
+				// 主动请求的失败保持安静：不弹错误条，重新掐表等下次
+				const proQuiet = this.proPending
+				// 模型只回了 [pass]：这次它不想说话，界面静默吞掉；跳过同样算一次未回复，防止一直刷
+				if (proQuiet && isPassOnly(show)) {
+					this.sending = false
+					if (this.flushTimer >= 0) {
+						clearTimeout(this.flushTimer)
+						this.flushTimer = -1
+					}
+					this.proPending = false
+					// 撤掉本轮的一切：万一 pass 气泡已经误提交，连同那条指令一起清掉，
+					// 界面回到触发前的样子（本轮指令之后的消息全是 AI 侧的，倒着弹即可）
+					let changed = false
+					while (this.msgs.length > 0 && this.msgs[this.msgs.length - 1].mine != true) {
+						this.msgs.pop()
+						changed = true
+					}
+					if (this.msgs.length > 0 && this.msgs[this.msgs.length - 1].hidden == true) {
+						this.msgs.pop()
+						changed = true
+					}
+					if (changed) {
+						this.sync()
+						this.persist()
+					}
+					// 给用户一点反馈：这次它选择不说话（toast 不进记录，几秒自动消失）
+					uni.showToast({ title: this.displayName() + ' 这次没说话', icon: 'none' })
+					this.streamingText = ''
+					this.rawText = ''
+					this.armProactive()
+					return
+				}
+				// 半句也要显示出来（模型说完 / 被中断时）
+				this.emitReady(true)
+				const saidSomething = show.length > 0
+				if (saidSomething) {
+					this.retriedEmpty = false
+				} else if (wasAborted) {
+					// 被中断且没有内容：不要用「只输出标记」那套重试，直接说明
+					this.retriedEmpty = false
+					if (!proQuiet) {
+						this.errorText = '连接中断，没收到内容（本地模型常见：没启动、模型名不对，或服务不支持流式）'
+					}
+				} else if (!this.retriedEmpty) {
+					// 只回了标签/空内容：静默补一次正常回复（标记不带正文就不结算）
+					this.retriedEmpty = true
+					this.sending = false
+					this.requestWith('你刚才只输出了好感度标记，没有正文。请用一句话正常回应用户，标记放在这句话的最后，不要只输出标记。')
+					return
+				} else {
+					this.retriedEmpty = false
+					if (!proQuiet) {
+						this.errorText = '模型连续两次只回了空内容，点重试试试'
+					}
+				}
+				// 情绪徽章挂到本轮第一条消息上
+				if (mood.length > 0 && this.turnFirstId > 0) {
+					for (let i = 0; i < this.msgs.length; i++) {
+						if (this.msgs[i].id == this.turnFirstId) {
+							this.msgs[i].mood = mood
+						}
+					}
+					this.sync()
+					this.persist()
+				}
+				if (this.lastFinish == 'length' && !proQuiet) {
+					const prof = getProfile(this.pid)
+					this.errorText = '输出被截断：当前「最大输出」只有 ' + prof.maxTokens.toString() +
+						' token，去配置页把它调大（不是「上下文上限」）。推理模型建议 2048 以上'
+				}
+				if (parsed.delta != 0 && this.affOn && saidSomething) {
+					const nv = clampAffinity(affinityOf(this.chat) + parsed.delta)
+					setChatAffinity(this.chatId, nv)
+					this.chat.affinity = nv
+					this.syncAffinity()
+					const sign = parsed.delta > 0 ? '+' : ''
+					uni.showToast({ title: '好感 ' + sign + parsed.delta.toString(), icon: 'none' })
+				}
+				this.streamingText = ''
+				this.rawText = ''
+				this.scrollToBottom()
+				// 这一轮说完（无论谁发起的）都重新掐表；主动请求结算掉待处理标记
+				this.proPending = false
+				this.armProactive()
+			},
+			/** 剥掉模型复读出来的 <系统消息>/<系统信息> 块（完整块整块删，半截块从开头扣到末尾） */
+			stripSysEcho(s: string): string {
+				let out = ''
+				let i = 0
+				while (i < s.length) {
+					if (s.substring(i, i + 1) == '<') {
+						const rest = s.substring(i)
+						if (rest.startsWith('<系统消息>') || rest.startsWith('<系统信息>')) {
+							const c1 = s.indexOf('</系统消息>', i)
+							const c2 = s.indexOf('</系统信息>', i)
+							let c = -1
+							if (c1 >= 0 && c2 >= 0) {
+								c = c1 < c2 ? c1 : c2
+							} else if (c1 >= 0) {
+								c = c1
+							} else {
+								c = c2
+							}
+							if (c >= 0) {
+								// 整块跳过（闭合标签 7 个字符）
+								i = c + 7
+								continue
+							}
+							// 没等到闭合：当半截复读，后面全丢
+							break
+						}
+						// 尾巴正好是半个开标签（从这到结尾刚好是标签前半截）：先扣住，等流齐了再定
+						const fragLen = s.length - i
+						if (fragLen >= 2 && fragLen <= 5) {
+							const frag = s.substring(i)
+							if ('<系统消息>'.indexOf(frag) == 0 || '<系统信息>'.indexOf(frag) == 0) {
+								break
+							}
+						}
+					}
+					out += s.substring(i, i + 1)
+					i++
+				}
+				return out
+			},
+			/** 流式过程中把好感度标记藏掉（包括只收到一半的） */
+			displayText(raw: string): string {
+				let out = this.stripSysEcho(parseAffinity(parseMood(raw).text).text)
+				// 正在输出的半个标记先藏起来
+				const marks: Array<string> = ['[aff', '【aff', '[mood', '【mood', '[Mood', '【Mood']
+				const closes: Array<string> = [']', '】', ']', '】', ']', '】']
+				for (let i = 0; i < marks.length; i++) {
+					const at = out.toLowerCase().lastIndexOf(marks[i].toLowerCase())
+					if (at >= 0 && out.indexOf(closes[i], at) < 0) {
+						out = out.substring(0, at)
+					}
+				}
+				return out
+			},
+			moodColorOf(m: string): string {
+				return moodColor(m)
+			},
+			/** 骰子：抛一个突发事件当旁白，让角色接着演 */
+			onDice(): void {
+				if (this.sending || this.dicing) {
+					return
+				}
+				const p = getProfile(this.pid)
+				if (p.apiKey.trim().length == 0 && p.provider != 'ollama') {
+					this.needConfig = true
+					return
+				}
+				this.dicing = true
+				// 让模型结合当前剧情现编一个事件
+				let ctx = ''
+				const start = this.msgs.length - 6 < 0 ? 0 : this.msgs.length - 6
+				for (let i = start; i < this.msgs.length; i++) {
+					const m = this.msgs[i]
+					if (m.hidden == true) {
+						continue
+					}
+					const who = m.mine ? '用户' : this.chat.charName
+					const what = m.text.length > 0 ? m.text : '[图片]'
+					ctx += who + '：' + what + '\n'
+				}
+				const sys: ChatMsg = {
+					role: 'system',
+					content: '你在帮一段角色扮演对话即兴加戏。根据上下文想一个「突然发生的小事件」，20~40 字。' +
+						'只输出事件本身：不要引号、不要「旁白：」前缀、不要解释、不要换行。' +
+						'事件要贴合当前情境和两人的情绪，能自然地推动对话继续。'
+				} as ChatMsg
+				const usr: ChatMsg = {
+					role: 'user',
+					content: '【角色】' + this.chat.charName +
+						'\n【最近对话】\n' + (ctx.length > 0 ? ctx : '（刚开始）') + '\n请给出一个小事件。'
+				} as ChatMsg
+				const list: Array<ChatMsg> = [sys, usr]
+				this.diceRequest(p, list)
+			},
+			diceRequest(p: Profile, list: Array<ChatMsg>): void {
+				simpleChat(p, list, (ok: boolean, text: string) => {
+					this.dicing = false
+					let ev = text.trim()
+					// 去掉引号和前缀
+					ev = ev.split('"').join('')
+					ev = ev.split('「').join('')
+					ev = ev.split('」').join('')
+					ev = ev.split('旁白：').join('')
+					ev = ev.split('旁白:').join('')
+					ev = ev.split('\n')[0].trim()
+					if (ev.length > 60) {
+						ev = ev.substring(0, 60)
+					}
+					if (!ok || ev.length == 0) {
+						// 模型没给，退回预设
+						const idx = Math.floor(Math.random() * DICE_EVENTS.length)
+						if (idx >= 0 && idx < DICE_EVENTS.length) {
+							ev = DICE_EVENTS[idx]
+						}
+					}
+					if (ev.length == 0) {
+						this.errorText = '骰子没掷出来，再点一次'
+						return
+					}
+					const now = Date.now()
+					this.msgs.push({ id: now, text: '（旁白：' + ev + '）', time: now, mine: true, narration: true, aff: this.affOn ? affinityOf(this.chat) : -1 } as Msg)
+					this.lastFinish = ''
+					this.errorText = ''
+					this.needConfig = false
+					this.sync()
+					this.persist()
+					this.scrollToBottom()
+					this.request()
+				})
+			},
+			/** 流式输出时跟着往下滚 */
+			followBottom(): void {
+				this.scrollFlip = !this.scrollFlip
+				this.scrollTarget = this.scrollFlip ? 'endA' : 'endB'
+			},
+			retry(): void {
+				if (this.sending) {
+					return
+				}
+				this.errorText = ''
+				this.request()
+			},
+			toConfig(): void {
+				uni.navigateTo({ url: '/pages/config/config' })
+			},
+			onMore(): void {
+				this.sheetMode = 'menu'
+				this.sheetTitle = ''
+				this.sheetItems = ['本会话的设定', '查看上次请求', '重置为初始对话', '删除这段对话']
+				this.sheetDanger = 3
+				this.sheetOpen = true
+			},
+			closeSheet(): void {
+				this.sheetOpen = false
+			},
+			onSheetPick(i: number): void {
+				this.sheetOpen = false
+				// 重置确认层
+				if (this.sheetMode == 'reset') {
+					if (i == 0) {
+						this.msgs = resetChatToInitial(this.chat)
+						this.renderFrom = 0
+						this.sync()
+						this.errorText = ''
+						this.scrollToBottom()
+						uni.showToast({ title: '已恢复初始对话', icon: 'none' })
+					}
+					return
+				}
+				// 删除确认层
+				if (this.sheetMode == 'delete') {
+					if (i == 0) {
+						deleteChat(this.chatId)
+						uni.showToast({ title: '已删除', icon: 'none' })
+						setTimeout(() => {
+							uni.navigateBack()
+						}, 350)
+					}
+					return
+				}
+				// 回复中离开确认层
+				if (this.sheetMode == 'leave') {
+					if (i == 0) {
+						abortChat()
+						this.sending = false
+						uni.navigateBack()
+					}
+					return
+				}
+				if (i == 0) {
+					uni.navigateTo({
+						url: '/pages/chatset/chatset?chatId=' + this.chatId
+					})
+					return
+				}
+				if (i == 1) {
+					this.reqOpen = true
+					return
+				}
+				if (i == 2) {
+					// 重置会清掉当前聊天记录，先确认
+					this.sheetMode = 'reset'
+					this.sheetTitle = '重置为初始对话？当前聊天记录会被清掉（好感度保留）'
+					this.sheetItems = ['确认重置']
+					this.sheetDanger = 0
+					// 这一下点击还会冒泡到遮罩把弹层关掉，所以等它处理完再打开确认层
+					setTimeout(() => {
+						runOnMain(() => {
+							this.sheetOpen = true
+						})
+					}, 40)
+					return
+				}
+				if (i == 3) {
+					// 删除整段对话：会连聊天记录一起删掉，先确认
+					this.sheetMode = 'delete'
+					this.sheetTitle = '删除这段对话？聊天记录会一起删掉，无法恢复'
+					this.sheetItems = ['确认删除']
+					this.sheetDanger = 0
+					setTimeout(() => {
+						runOnMain(() => {
+							this.sheetOpen = true
+						})
+					}, 40)
+				}
+			},
+			goBack(): void {
+				if (this.sending) {
+					this.askLeave()
+					return
+				}
+				uni.navigateBack()
+			},
+			/** 回复中要离开时的确认层 */
+			askLeave(): void {
+				if (this.sheetOpen) {
+					return
+				}
+				this.sheetMode = 'leave'
+				this.sheetTitle = '正在回复，现在离开会中断（已经收到的部分会保留）'
+				this.sheetItems = ['仍然离开']
+				this.sheetDanger = 0
+				this.sheetOpen = true
+			}
+		}
+	}
+</script>
+
+<style>
+	/* 纯 flex 三段式：头部固定、中间消息区自适应、输入栏固定 */
+	.page {
+		flex-direction: column;
+		overflow: hidden;
+		background-color: #F7F2E8;
+	}
+
+	/* ---------- 头部 ---------- */
+	.headwrap {
+		flex-shrink: 0;
+		flex-direction: column;
+	}
+
+	.head {
+		flex-shrink: 0;
+		flex-direction: row;
+		align-items: center;
+		padding-left: 16px;
+		padding-right: 18px;
+		padding-bottom: 10px;
+	}
+
+	.back {
+		width: 30px;
+		height: 30px;
+		justify-content: center;
+	}
+
+	.back-t {
+		font-size: 19px;
+		color: #1C1A16;
+	}
+
+	.ava {
+		width: 32px;
+		height: 32px;
+		border-radius: 6px;
+		background-color: #EDE5D5;
+		align-items: center;
+		justify-content: center;
+		margin-left: 4px;
+		overflow: hidden;
+	}
+
+	.ava-img {
+		width: 32px;
+		height: 32px;
+	}
+
+	.ava-sm-img {
+		width: 32px;
+		height: 32px;
+	}
+
+	.ava-t {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 17px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.head-main {
+		flex: 1;
+		margin-left: 10px;
+	}
+
+	.name {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 18px;
+		font-weight: bold;
+		letter-spacing: 0.5px;
+		color: #1C1A16;
+	}
+
+	.status-row {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 3px;
+	}
+
+	.prov {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 4px;
+	}
+
+	.prov-t {
+		font-size: 11px;
+		letter-spacing: 0.3px;
+		color: #8A8375;
+		margin-left: 5px;
+	}
+
+	.prov-caret {
+		font-size: 9px;
+		color: #A9A292;
+		margin-left: 4px;
+	}
+
+	.dot {
+		width: 5px;
+		height: 5px;
+		border-radius: 3px;
+		margin-right: 5px;
+	}
+
+	.status {
+		font-size: 11px;
+		letter-spacing: 0.5px;
+		color: #8A8375;
+	}
+
+	.aff {
+		flex-direction: row;
+		align-items: center;
+		margin-right: 12px;
+	}
+
+	.aff-heart {
+		font-size: 12px;
+		color: #B4553C;
+		margin-right: 3px;
+	}
+
+	.aff-v {
+		font-family: monospace;
+		font-size: 13px;
+		color: #1C1A16;
+	}
+
+	.more {
+		width: 30px;
+		height: 30px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.more-t {
+		font-size: 18px;
+		color: #8A8375;
+	}
+
+	.kbd {
+		padding-left: 18px;
+		padding-right: 18px;
+		padding-top: 4px;
+		padding-bottom: 2px;
+		background-color: #EFE7D8;
+	}
+
+	.kbd-t {
+		font-family: monospace;
+		font-size: 10px;
+		color: #B4553C;
+	}
+
+	.rule {
+		height: 1px;
+		background-color: #DCD4C4;
+		margin-left: 18px;
+		margin-right: 18px;
+	}
+
+	/* ---------- 消息 ---------- */
+	.msgs {
+		flex: 1;
+	}
+
+	.msgs-inner {
+		padding-left: 18px;
+		padding-right: 18px;
+		padding-top: 14px;
+	}
+
+	.msg-item {
+		flex-direction: column;
+	}
+
+	.time-sep {
+		align-items: center;
+		padding-top: 6px;
+		padding-bottom: 14px;
+	}
+
+	.pro-sep {
+		align-items: center;
+		margin-bottom: 10px;
+	}
+
+	.pro-sep-t {
+		font-size: 10.5px;
+		letter-spacing: 1px;
+		color: #B4553C;
+	}
+
+	.time-t {
+		font-family: monospace;
+		font-size: 10.5px;
+		letter-spacing: 1px;
+		color: #A9A292;
+	}
+
+	.line {
+		flex-direction: row;
+		align-items: flex-start;
+		margin-bottom: 14px;
+	}
+
+	.line-start {
+		justify-content: flex-start;
+	}
+
+	.line-end {
+		justify-content: flex-end;
+	}
+
+	.ava-sm {
+		width: 32px;
+		height: 32px;
+		border-radius: 8px;
+		background-color: #EDE5D5;
+		align-items: center;
+		justify-content: center;
+		margin-right: 10px;
+		overflow: hidden;
+	}
+
+	.ava-sm-mine {
+		margin-right: 0;
+		margin-left: 10px;
+	}
+
+	.ava-sm-t {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 16px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.narration {
+		align-items: center;
+		padding-top: 6px;
+		padding-bottom: 6px;
+		padding-left: 40px;
+		padding-right: 40px;
+	}
+
+	.narration-t {
+		font-size: 11.5px;
+		line-height: 18px;
+		color: #A9A292;
+		text-align: center;
+	}
+
+	/* 记忆工具的小字提示：内容上方的一条窄带，固定在头部下面 */
+	.mem-note {
+		flex-shrink: 0;
+		align-items: center;
+		padding-top: 5px;
+		padding-bottom: 5px;
+		background-color: #F1EADD;
+	}
+
+	.mem-note-t {
+		font-size: 10.5px;
+		letter-spacing: 1px;
+		color: #A9A292;
+	}
+
+	/* 顶部「上滑加载更早」提示 */
+	.more-tip {
+		align-items: center;
+		padding-top: 10px;
+		padding-bottom: 4px;
+	}
+
+	.more-tip-t {
+		font-size: 10.5px;
+		letter-spacing: 1px;
+		color: #B9B1A0;
+	}
+
+	.bubble-col {
+		flex-shrink: 1;
+	}
+
+	.mood-chip {
+		padding-left: 7px;
+		padding-right: 7px;
+		padding-top: 2px;
+		padding-bottom: 2px;
+		border-width: 1px;
+		border-style: solid;
+		border-color: #DCD4C4;
+		border-radius: 3px;
+		margin-bottom: 4px;
+		align-self: flex-start;
+	}
+
+	.mood-t {
+		font-size: 10.5px;
+		letter-spacing: 1px;
+	}
+
+	.dicebtn {
+		margin-right: 8px;
+	}
+
+	.bubble {
+		/* 390 − 两侧各 18 内边距 − 对面头像列（32+10）×2 = 270
+		   这样左右两边的气泡，靠内那一侧的左边线正好对齐 */
+		max-width: 270px;
+		flex-shrink: 1;
+		padding: 10px 12px;
+		border-radius: 3px;
+		background-color: #EFE7D8;
+	}
+
+	.bubble-mine {
+		background-color: #1C1A16;
+	}
+
+	.bubble-t {
+		font-size: 14.5px;
+		line-height: 22px;
+		color: #1C1A16;
+	}
+
+	.bubble-t-mine {
+		color: #F7F2E8;
+	}
+
+	.typing {
+		color: #A9A292;
+	}
+
+	.pad {
+		height: 12px;
+	}
+
+	/* ---------- 错误 / 提示 ---------- */
+	.err-bar {
+		flex-direction: row;
+		align-items: center;
+		padding-left: 18px;
+		padding-right: 18px;
+		padding-top: 8px;
+		padding-bottom: 8px;
+		background-color: #F2E8D9;
+	}
+
+	.err-t {
+		flex: 1;
+		font-size: 11.5px;
+		line-height: 17px;
+		color: #B4553C;
+	}
+
+	.err-retry {
+		font-size: 11.5px;
+		letter-spacing: 1px;
+		color: #B4553C;
+		margin-left: 10px;
+	}
+
+	/* ---------- 输入栏 ---------- */
+	.inputbar {
+		flex-shrink: 0;
+		flex-direction: row;
+		align-items: center;
+		padding: 10px 18px 14px 18px;
+		border-top-width: 1px;
+		border-top-style: solid;
+		border-top-color: #DCD4C4;
+	}
+
+	.input {
+		flex: 1;
+		/* 允许被压缩：否则输入框里的长文本会把发送按钮挤窄 */
+		min-width: 0;
+		height: 40px;
+		padding-left: 12px;
+		padding-right: 12px;
+		background-color: #EFE7D8;
+		border-radius: 3px;
+		font-size: 14.5px;
+		color: #1C1A16;
+	}
+
+	.sendbtn {
+		flex-shrink: 0;
+		flex-direction: row;
+		margin-left: 10px;
+		/* 固定宽度 + min-width：避免被输入框挤窄后把「发送」裁成一个字 */
+		width: 68px;
+		min-width: 68px;
+		height: 40px;
+		border-radius: 3px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.imgbtn {
+		width: 40px;
+		height: 40px;
+		border-radius: 3px;
+		background-color: #EFE7D8;
+		align-items: center;
+		justify-content: center;
+		margin-right: 8px;
+	}
+
+	.imgbtn-t {
+		font-size: 17px;
+	}
+
+	.msg-img {
+		width: 150px;
+		height: 150px;
+		border-radius: 6px;
+	}
+
+	.imgcv {
+		width: 480px;
+		height: 480px;
+		position: absolute;
+		left: -2000px;
+		top: 0;
+	}
+
+	.dump-layer {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		justify-content: flex-end;
+	}
+
+	.dump-mask {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(20, 18, 15, 0.55);
+	}
+
+	.dump-panel {
+		height: 560px;
+		background-color: #F7F2E8;
+		border-top-left-radius: 10px;
+		border-top-right-radius: 10px;
+	}
+
+	.dump-head {
+		flex-direction: row;
+		align-items: center;
+		padding: 14px 18px;
+		border-bottom-width: 1px;
+		border-bottom-style: solid;
+		border-bottom-color: #DCD4C4;
+	}
+
+	.dump-title {
+		flex: 1;
+		font-size: 13px;
+		letter-spacing: 2px;
+		color: #1C1A16;
+		font-weight: bold;
+	}
+
+	.dump-copy {
+		font-size: 12px;
+		color: #B4553C;
+		margin-right: 14px;
+	}
+
+	.dump-close {
+		font-size: 12px;
+		color: #8A8375;
+	}
+
+	.dump-body {
+		flex: 1;
+		padding: 12px 16px;
+	}
+
+	.dump-text {
+		font-family: monospace;
+		font-size: 11px;
+		line-height: 17px;
+		color: #3A3630;
+	}
+
+	.img-mask {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(20, 18, 15, 0.9);
+		align-items: center;
+		justify-content: center;
+	}
+
+	.img-big {
+		width: 340px;
+		height: 520px;
+	}
+
+	.img-hint {
+		font-size: 11px;
+		color: rgba(247, 242, 232, 0.6);
+		margin-top: 16px;
+	}
+
+	.sendbtn-t {
+		width: 100%;
+		text-align: center;
+		font-size: 13px;
+		letter-spacing: 1px;
+		color: #F7F2E8;
+		flex-shrink: 0;
+		lines: 1;
+	}
+
+	/* ---------- 通用底部弹层（接口选择 / 好感度）---------- */
+	/* 外层只负责定位：遮罩和 panel 平级，panel 里的点击不会冒泡到遮罩 */
+	.layer {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		justify-content: flex-end;
+	}
+
+	.mask {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(28, 26, 22, 0.32);
+	}
+
+	.sheet {
+		background-color: #F7F2E8;
+		border-top-left-radius: 10px;
+		border-top-right-radius: 10px;
+		padding-top: 8px;
+		padding-bottom: 10px;
+	}
+
+	.hair {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.handle-wrap {
+		align-items: center;
+		padding-top: 6px;
+		padding-bottom: 8px;
+	}
+
+	.handle {
+		width: 34px;
+		height: 3px;
+		border-radius: 2px;
+		background-color: #DCD4C4;
+	}
+
+	/* ---------- 选择接口 ---------- */
+	.sheet-head {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding-left: 20px;
+		padding-right: 20px;
+		padding-bottom: 10px;
+	}
+
+	.sheet-title {
+		font-size: 12px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.sheet-close {
+		font-size: 11.5px;
+		color: #B4553C;
+	}
+
+	.sheet-hair {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.opt {
+		flex-direction: row;
+		align-items: center;
+		padding: 14px 20px;
+		border-bottom-width: 1px;
+		border-bottom-style: solid;
+		border-bottom-color: #E4DBC9;
+	}
+
+	.opt-main {
+		flex: 1;
+	}
+
+	.opt-name {
+		font-size: 15px;
+		font-weight: bold;
+		letter-spacing: 0.3px;
+		color: #1C1A16;
+	}
+
+	.opt-model {
+		font-family: monospace;
+		font-size: 11px;
+		color: #8A8375;
+		margin-top: 3px;
+	}
+
+	.opt-state {
+		font-size: 11.5px;
+		letter-spacing: 0.5px;
+	}
+
+	.opt-check {
+		font-size: 14px;
+		color: #1C1A16;
+		margin-left: 10px;
+	}
+
+	/* ---------- 好感度面板 ---------- */
+	.aff-head {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding-left: 20px;
+		padding-right: 20px;
+		padding-bottom: 10px;
+	}
+
+	.aff-title {
+		font-size: 12px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.aff-close {
+		font-size: 11.5px;
+		color: #B4553C;
+	}
+
+	.aff-body {
+		padding: 22px 20px 6px 20px;
+	}
+
+	.aff-row {
+		flex-direction: row;
+		align-items: flex-end;
+	}
+
+	.aff-num {
+		font-family: monospace;
+		font-size: 40px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.aff-level {
+		font-size: 15px;
+		font-weight: bold;
+		letter-spacing: 2px;
+		margin-left: 10px;
+		padding-bottom: 8px;
+	}
+
+	.bar-wrap {
+		height: 6px;
+		background-color: #E4DBC9;
+		border-radius: 3px;
+		margin-top: 14px;
+		overflow: hidden;
+	}
+
+	.bar {
+		height: 6px;
+		border-radius: 3px;
+	}
+
+	.aff-tip {
+		font-size: 12px;
+		color: #6B6656;
+		margin-top: 12px;
+	}
+
+	.aff-note {
+		font-size: 11px;
+		line-height: 17px;
+		color: #A9A292;
+		margin-top: 8px;
+	}
+
+	.aff-cancel {
+		margin-top: 18px;
+		margin-left: 16px;
+		margin-right: 16px;
+		padding-top: 14px;
+		padding-bottom: 14px;
+		align-items: center;
+		background-color: #EFE7D8;
+		border-radius: 4px;
+	}
+
+	.aff-cancel-t {
+		font-size: 14px;
+		letter-spacing: 1px;
+		color: #6B6656;
+	}
+
+	.sheet-foot {
+		padding: 14px 20px;
+		align-items: center;
+	}
+
+	.sheet-foot-t {
+		font-size: 12px;
+		letter-spacing: 1px;
+		color: #B4553C;
+	}
+</style>

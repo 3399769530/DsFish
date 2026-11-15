@@ -1,0 +1,83 @@
+<template>
+	<!-- 通用底部弹层：遮罩渐入 + 面板从下方滑上来
+	     遮罩和面板是兄弟节点，点面板里不会冒泡到遮罩误关 -->
+	<view v-if="visible" class="layer">
+		<view class="mask" :style="shown ? 'opacity:1' : 'opacity:0'" @click="onClose"></view>
+		<view class="sheet" :style="'transform: translateY(' + (shown ? '0px' : SHEET_DISTANCE) + ')'">
+			<slot></slot>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+	/** 面板初始下沉的距离，够它完全躲到屏幕外面 */
+	const SHEET_DISTANCE: string = '280px'
+
+	export default {
+		props: {
+			visible: {
+				type: Boolean,
+				default: false
+			}
+		},
+		emits: ['close'],
+		data() {
+			return {
+				shown: false,
+				SHEET_DISTANCE: SHEET_DISTANCE
+			}
+		},
+		watch: {
+			visible(v: boolean) {
+				if (v) {
+					// 先以「在下方 + 透明」渲染一帧，下一帧再切到最终位置，transition 才能生效
+					this.shown = false
+					setTimeout(() => {
+						this.shown = true
+					}, 24)
+				} else {
+					this.shown = false
+				}
+			}
+		},
+		methods: {
+			onClose(): void {
+				this.$emit('close')
+			}
+		}
+	}
+</script>
+
+<style>
+	.layer {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		justify-content: flex-end;
+		z-index: 90;
+	}
+
+	.mask {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(28, 26, 22, 0.32);
+		transition-property: opacity;
+		transition-duration: 180ms;
+		transition-timing-function: ease-out;
+	}
+
+	.sheet {
+		background-color: #F7F2E8;
+		border-top-left-radius: 10px;
+		border-top-right-radius: 10px;
+		transition-property: transform;
+		transition-duration: 260ms;
+		transition-timing-function: ease-out;
+		padding-top: 12px;
+	}
+</style>

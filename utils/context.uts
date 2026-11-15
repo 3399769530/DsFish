@@ -1,0 +1,117 @@
+/**
+ * 上下文预算
+ * 估算 token：中文按 1 字 ≈ 1 token，ASCII 按 4 字符 ≈ 1 token，每条消息 +8 开销
+ * 压缩策略：超过预算时，保留最近 10% 预算的原文，其余压缩成摘要
+ */
+import { Msg } from './store.uts'
+
+export const DEFAULT_CONTEXT_TOKENS: number = 8000
+/** 保留原文的预算比例 */
+export const KEEP_RATIO: number = 0.1
+/** 原文至少保留这么多 token（比例算出来太小就按这个来） */
+export const MIN_KEEP_TOKENS: number = 400
+/** 至少要能压掉这么多条，才值得发一次压缩请求 */
+export const MIN_CUT_MSGS: number = 2
+/** 用到上限的 70% 就触发压缩，给回答留余量 */
+export const TRIGGER_RATIO: number = 0.7
+
+export function estTokens(s: string): number {
+	if (s.length == 0) {
+		return 0
+	}
+	let ascii = 0
+	let other = 0
+	for (let i = 0; i < s.length; i++) {
+		const code = s.charCodeAt(i)
+		if (code == null) {
+			other++
+			continue
+		}
+		const v = code!
+		if (v < 128) {
+			ascii++
+		} else {
+			other++
+		}
+	}
+	return Math.ceil(ascii * 1.0 / 4 * 1.0) + other + 8
+}
+
+export function estMsg(m: Msg): number {
+	let n = estTokens(m.text)
+	if (m.image != null && m.image!.length > 0) {
+		// 图片按固定开销估，base64 不按字符数算
+		n += 800
+	}
+	return n
+}
+
+export function estMsgs(list: Array<Msg>): number {
+	let n = 0
+	for (let i = 0; i < list.length; i++) {
+		n += estMsg(list[i])
+	}
+	return n
+}
+
+export type SplitResult = {
+	/** 需要压缩掉的条数（前 N 条） */
+	cut: number
+	/** 保留原文的起始下标 */
+	keepFrom: number
+	/** 压缩后预计 token */
+	estKeep: number
+	/** 是否需要压缩 */
+	need: boolean
+}
+
+/**
+ * 从最新往回累加，直到用掉「保留预算」（总预算的 10%）
+ * alreadySummarized = 前面已经压缩过的条数，不会重复压缩
+ */
+export function planSplit(list: Array<Msg>, sysTokens: number, summaryTokens: number, budget: number, alreadySummarized: number): SplitResult {
+	const total = sysTokens + summaryTokens + estMsgs(list)
+	// 到 70% 就压，留 30% 给回答
+	const trigger = Math.floor(budget * 1.0 * TRIGGER_RATIO)
+	if (total <= trigger) {
+		return { cut: alreadySummarized, keepFrom: alreadySummarized, estKeep: total, need: false } as SplitResult
+	}
+
+	// 保留预算：比例的绝对值太小就抬到 MIN_KEEP_TOKENS，同时不超过剩余空间
+	let keepBudget = Math.floor(budget * KEEP_RATIO)
+	if (keepBudget < MIN_KEEP_TOKENS) {
+		keepBudget = MIN_KEEP_TOKENS
+	}
+	let room = budget - sysTokens - summaryTokens
+	if (room < 200) {
+		room = 200
+	}
+	if (keepBudget > room) {
+		keepBudget = room
+	}
+
+	let acc = 0
+	let keepFrom = list.length
+	for (let i = list.length - 1; i >= 0; i--) {
+		const t = estMsg(list[i])
+		if (acc > 0 && acc + t > keepBudget) {
+			break
+		}
+		acc += t
+		keepFrom = i
+		if (i <= alreadySummarized) {
+			break
+		}
+	}
+	let cut = keepFrom
+	if (cut < alreadySummarized) {
+		cut = alreadySummarized
+	}
+	const need = cut - alreadySummarized >= MIN_CUT_MSGS
+	return {
+		cut: cut,
+		keepFrom: keepFrom,
+		estKeep: sysTokens + summaryTokens + acc,
+		need: need
+	} as SplitResult
+}

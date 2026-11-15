@@ -1,0 +1,155 @@
+/**
+ * 选图 + 持久化。
+ * chooseImage 返回的是缓存目录（CACHE_PATH）里的临时路径，系统空间不足时会被自动清理，
+ * 不能直接当永久数据存。这里选完图立刻用文件系统 API 把文件搬进
+ * USER_DATA_PATH（files 目录，只有卸载才删），记录里存的是永久路径。
+ * web 端没有文件系统（blob 路径本来也只活在本次会话），保持原样。
+ */
+export type PickResult = {
+	ok: boolean
+	path: string
+	error: string
+}
+
+/** 从原路径取扩展名，认不出来就当 jpg */
+function extOf(p: string): string {
+	const at = p.lastIndexOf('.')
+	if (at >= 0) {
+		const e = p.substring(at).toLowerCase()
+		if (e == '.png' || e == '.jpg' || e == '.jpeg' || e == '.gif' || e == '.webp') {
+			return e
+		}
+	}
+	return '.jpg'
+}
+
+/** 把临时文件搬进应用用户目录，回调永久路径；失败就退回原路径（不比现状差） */
+export function persistImage(tempPath: string, done: (path: string) => void): void {
+	// #ifdef APP
+	try {
+		const fs = uni.getFileSystemManager()
+		const dest = uni.env.USER_DATA_PATH + '/dsfish/' + Date.now().toString() + extOf(tempPath)
+		fs.saveFile({
+			tempFilePath: tempPath,
+			filePath: dest,
+			success: (res) => {
+				done(res.savedFilePath)
+			},
+			fail: (_err) => {
+				done(tempPath)
+			}
+		})
+	} catch (e) {
+		done(tempPath)
+	}
+	// #endif
+
+	// #ifndef APP
+	done(tempPath)
+	// #endif
+}
+
+export function pickImage(done: (r: PickResult) => void): void {
+	uni.chooseImage({
+		count: 1,
+		sizeType: ['compressed'],
+		sourceType: ['album', 'camera'],
+		success: (res) => {
+			const paths = res.tempFilePaths
+			if (paths.length == 0) {
+				done({ ok: false, path: '', error: '没有选到图片' } as PickResult)
+				return
+			}
+			// 先把文件搬去永久目录，再交给调用方
+			persistImage(paths[0], (p: string) => {
+				done({ ok: true, path: p, error: '' } as PickResult)
+			})
+		},
+		fail: (err) => {
+			done({ ok: false, path: '', error: err.errMsg } as PickResult)
+		}
+	})
+}
+
+export function pickAvatar(done: (r: PickResult) => void): void {
+	pickImage(done)
+}
+
+/** 换头像时删掉旧的永久图片；不是自家目录里的路径一律不动 */
+export function removeAvatarFile(path: string): void {
+	// #ifdef APP
+	if (path.indexOf('unifile://') == 0 || path.indexOf(uni.env.USER_DATA_PATH) == 0) {
+		try {
+			uni.getFileSystemManager().unlink({
+				filePath: path,
+				fail: (_e) => { }
+			})
+		} catch (e) {
+			// 删不掉就算了，不影响功能
+		}
+	}
+	// #endif
+}
+
+/**
+ * 把 dataURL 里的 base64 写成永久目录里的缩略图文件。
+ * 消息 JSON 里只存这个文件路径，图本体单独落盘；
+ * 回调文件路径，失败回空串（调用方退回无图占位）
+ */
+export function saveThumbData(dataUrl: string, name: string, done: (path: string) => void): void {
+	// #ifdef APP
+	const at = dataUrl.indexOf(',')
+	const b64 = at >= 0 ? dataUrl.substring(at + 1) : ''
+	if (b64.length > 0) {
+		try {
+			const dest = uni.env.USER_DATA_PATH + '/dsfish/' + name + '.jpg'
+			uni.getFileSystemManager().writeFile({
+				filePath: dest,
+				data: b64,
+				encoding: 'base64',
+				success: (_res) => {
+					done(dest)
+				},
+				fail: (_err) => {
+					done('')
+				}
+			})
+			return
+		} catch (e) {
+			done('')
+			return
+		}
+	}
+	// #endif
+	done('')
+}
+
+/** 读缩略图文件，回调还原出的 dataURL；读不到回空串 */
+export function loadThumbData(path: string, done: (data: string) => void): void {
+	// #ifdef APP
+	try {
+		uni.getFileSystemManager().readFile({
+			filePath: path,
+			encoding: 'base64',
+			success: (res) => {
+				const d = res.data.toString()
+				if (d.length > 0) {
+					done('data:image/jpeg;base64,' + d)
+				} else {
+					done('')
+				}
+			},
+			fail: (_err) => {
+				done('')
+			}
+		})
+		return
+	} catch (e) {
+		done('')
+		return
+	}
+	// #endif
+	// #ifndef APP
+	done('')
+	// #endif
+}

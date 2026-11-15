@@ -1,0 +1,108 @@
+<template>
+	<!-- 用 1px 的小块拼出虚线：原生端 border-style:dashed 画不出来，只能这样模拟 -->
+	<view class="wrap">
+		<view class="hline hline-top">
+			<view v-for="(d, i) in colsArr" :key="'t' + i" class="hdash" :style="'background-color:' + color"></view>
+		</view>
+		<view class="hline hline-bottom">
+			<view v-for="(d, i) in colsArr" :key="'b' + i" class="hdash" :style="'background-color:' + color"></view>
+		</view>
+		<view class="vline vline-left">
+			<view v-for="(d, i) in rowsArr" :key="'l' + i" class="vdash" :style="'background-color:' + color"></view>
+		</view>
+		<view class="vline vline-right">
+			<view v-for="(d, i) in rowsArr" :key="'r' + i" class="vdash" :style="'background-color:' + color"></view>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+	export default {
+		props: {
+			/** 横边上有几段虚线 */
+			cols: {
+				type: Number,
+				default: 24
+			},
+			/** 竖边上有几段虚线 */
+			rows: {
+				type: Number,
+				default: 4
+			},
+			color: {
+				type: String,
+				default: '#BDB3A1'
+			}
+		},
+		computed: {
+			colsArr(): Array<number> {
+				const out: Array<number> = []
+				for (let i = 0; i < this.cols; i++) {
+					out.push(i)
+				}
+				return out
+			},
+			rowsArr(): Array<number> {
+				const out: Array<number> = []
+				for (let i = 0; i < this.rows; i++) {
+					out.push(i)
+				}
+				return out
+			}
+		}
+	}
+</script>
+
+<style>
+	.wrap {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+	}
+
+	.hline {
+		position: absolute;
+		left: 0;
+		right: 0;
+		height: 1px;
+		flex-direction: row;
+		justify-content: space-between;
+	}
+
+	.hline-top {
+		top: 0;
+	}
+
+	.hline-bottom {
+		bottom: 0;
+	}
+
+	.hdash {
+		width: 5px;
+		height: 1px;
+	}
+
+	.vline {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		width: 1px;
+		flex-direction: column;
+		justify-content: space-between;
+	}
+
+	.vline-left {
+		left: 0;
+	}
+
+	.vline-right {
+		right: 0;
+	}
+
+	.vdash {
+		width: 1px;
+		height: 5px;
+	}
+</style>

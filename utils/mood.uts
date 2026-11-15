@@ -1,0 +1,101 @@
+/**
+ * 情绪标记：模型在回复末尾输出 [mood:害羞]，前端解析后显示徽章
+ * 容忍大小写、全角冒号、空格、中文方括号
+ */
+/**
+ * 情绪系统总开关
+ * 关掉后：系统提示词里不再要求 [mood:xx]，回复上也不会挂情绪徽章
+ * 以后要重新启用，把这里改成 true 即可（解析/配色/徽章代码都还在）
+ */
+export const MOOD_ENABLED: boolean = false
+
+export type MoodParse = {
+	text: string
+	mood: string
+}
+
+const MOODS: Array<string> = ['平静', '开心', '害羞', '吃醋', '生气', '担心', '疲惫', '兴奋', '失落', '得意']
+
+export function isKnownMood(m: string): boolean {
+	for (let i = 0; i < MOODS.length; i++) {
+		if (MOODS[i] == m) {
+			return true
+		}
+	}
+	return false
+}
+
+export function moodList(): Array<string> {
+	return MOODS
+}
+
+/** 解析并去掉 [mood:xx] */
+export function parseMood(raw: string): MoodParse {
+	let mood = ''
+	let out = ''
+	let i = 0
+	while (i < raw.length) {
+		const ch = raw.substring(i, i + 1)
+		if (ch == '[' || ch == '【') {
+			const close = ch == '[' ? ']' : '】'
+			const end = raw.indexOf(close, i + 1)
+			if (end > i) {
+				const inner = raw.substring(i + 1, end).trim()
+				const low = inner.toLowerCase()
+				if (low.startsWith('mood')) {
+					let rest = inner.substring(4).trim()
+					if (rest.startsWith(':') || rest.startsWith('：')) {
+						rest = rest.substring(1).trim()
+					}
+					if (rest.length > 0 && rest.length <= 6) {
+						mood = rest
+						i = end + 1
+						continue
+					}
+				}
+			}
+		}
+		out += ch
+		i++
+	}
+	return { text: out.trim(), mood: mood } as MoodParse
+}
+
+/** 徽章配色（低饱和，配纸张风） */
+export function moodColor(m: string): string {
+	if (m == '开心') {
+		return '#C98A2E'
+	}
+	if (m == '害羞') {
+		return '#C2703A'
+	}
+	if (m == '吃醋') {
+		return '#9A5B7A'
+	}
+	if (m == '生气') {
+		return '#A8302A'
+	}
+	if (m == '担心') {
+		return '#6B6656'
+	}
+	if (m == '疲惫') {
+		return '#8A8375'
+	}
+	if (m == '兴奋') {
+		return '#B4553C'
+	}
+	if (m == '失落') {
+		return '#7A7364'
+	}
+	if (m == '得意') {
+		return '#8A6A2E'
+	}
+	return '#A9A292'
+}
+
+/** 给模型的规则 */
+export function moodRule(): string {
+	return '\n\n【情绪】每次回复的最后、好感度标记之前，另起一行输出 [mood:词]，' +
+		'词从这十个里选一个最贴近你此刻情绪的：平静 开心 害羞 吃醋 生气 担心 疲惫 兴奋 失落 得意。' +
+		'这个标记只给系统看，不要在正文里提到它，也不要解释。'
+}

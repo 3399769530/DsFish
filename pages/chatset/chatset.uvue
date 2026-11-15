@@ -1,0 +1,669 @@
+<template>
+	<view class="page">
+
+		<!-- 头部 -->
+		<view class="nav" :style="'padding-top:' + headPad + 'px'">
+			<view class="back" @click="goBack">
+				<text class="back-t">←</text>
+			</view>
+			<text class="title">会话设定</text>
+		</view>
+		<view class="rule"></view>
+
+		<scroll-view class="body" scroll-y="true">
+			<view class="wrap">
+
+				<text class="hint">这里的改动只影响「这一段对话」，不会改角色卡，也不会动已有的聊天记录。</text>
+
+				<!-- 头像 + 昵称 -->
+				<view class="hero">
+					<view class="hero-ava" @click="onPickAvatar">
+						<image v-if="avatarPath.length > 0" class="hero-img" :src="avatarPath" mode="aspectFill"></image>
+						<text v-else class="hero-ava-t">{{ avatarText(name) }}</text>
+					</view>
+					<view class="hero-main">
+						<text class="hero-name">{{ name.length > 0 ? name : '未命名角色' }}</text>
+						<view class="hero-actions">
+							<text class="hero-link" @click="onPickAvatar">{{ avatarPath.length > 0 ? '换张图片' : '选择图片' }}</text>
+							<text v-if="avatarPath.length > 0" class="hero-link-del" @click="onClearAvatar">移除</text>
+						</view>
+					</view>
+				</view>
+
+				<view class="field">
+					<text class="label">角色昵称</text>
+					<input class="input" :value="name" :maxlength="24" placeholder="这一段里 AI 叫什么"
+						placeholder-style="color:#B9B1A0" @input="onNameInput" />
+					<view class="input-line"></view>
+				</view>
+
+				<view class="field">
+					<text class="label">用户昵称</text>
+					<input class="input" :value="userName" :maxlength="24" placeholder="这一段里你是谁"
+						placeholder-style="color:#B9B1A0" @input="onUserInput" />
+					<view class="input-line"></view>
+				</view>
+
+				<view class="field">
+					<text class="label">系统提示词</text>
+					<textarea class="textarea" :value="prompt" :maxlength="4000" placeholder="这一段的角色设定…"
+						placeholder-style="color:#B9B1A0" @input="onPromptInput"></textarea>
+					<view class="input-line"></view>
+					<view class="tip-row">
+						<text class="tip-t">可以用</text>
+						<view class="chip" @click="insertVar(varChar)">
+							<text class="chip-t">{{ varChar }}</text>
+						</view>
+						<text class="tip-t">和</text>
+						<view class="chip" @click="insertVar(varUser)">
+							<text class="chip-t">{{ varUser }}</text>
+						</view>
+						<text class="tip-t">占位</text>
+					</view>
+					<text class="tip">点一下标签，会插到提示词末尾；发消息时自动换成上面两个昵称</text>
+				</view>
+
+				<text class="note">初始对话只能在角色卡里改；这里改的是「往后怎么聊」，历史消息不受影响。</text>
+
+				<view class="section">
+					<text class="sec-t">规则</text>
+				</view>
+				<view class="hair"></view>
+
+				<view class="switch-row" @click="toggleAffinity">
+					<view class="switch-main">
+						<text class="switch-t">好感度</text>
+						<text class="switch-s">关掉后不再计算好感，也不再给角色打分的指令</text>
+					</view>
+					<view class="tg" :style="affinityOn ? 'background-color:#1C1A16;justify-content:flex-end' : 'background-color:#DCD4C4;justify-content:flex-start'">
+						<view class="tg-knob"></view>
+					</view>
+				</view>
+				<view class="hair"></view>
+
+				<view class="switch-row" @click="toggleTime">
+					<view class="switch-main">
+						<text class="switch-t">时间感知</text>
+						<text class="switch-s">关掉后不告诉模型现在几点、隔了多久</text>
+					</view>
+					<view class="tg" :style="timeOn ? 'background-color:#1C1A16;justify-content:flex-end' : 'background-color:#DCD4C4;justify-content:flex-start'">
+						<view class="tg-knob"></view>
+					</view>
+				</view>
+				<view class="hair"></view>
+
+				<view class="switch-row" @click="toggleMemHint">
+					<view class="switch-main">
+						<text class="switch-t">记忆提示</text>
+						<text class="switch-s">模型查/存记忆时，在聊天里显示一行灰色小字</text>
+					</view>
+					<view class="tg" :style="memHintOn ? 'background-color:#1C1A16;justify-content:flex-end' : 'background-color:#DCD4C4;justify-content:flex-start'">
+						<view class="tg-knob"></view>
+					</view>
+				</view>
+				<view class="hair"></view>
+
+				<view class="switch-row" @click="toggleProactive">
+					<view class="switch-main">
+						<text class="switch-t">主动消息</text>
+						<text class="switch-s">待在这个会话里一段时间没动静，AI 会先开口找你；连续 3 条没回就停</text>
+					</view>
+					<view class="tg" :style="proactiveOn ? 'background-color:#1C1A16;justify-content:flex-end' : 'background-color:#DCD4C4;justify-content:flex-start'">
+						<view class="tg-knob"></view>
+					</view>
+				</view>
+
+				<view v-if="proactiveOn" class="pro-box">
+					<view class="pro-row">
+						<text class="pro-label">最短</text>
+						<input class="pro-input" type="number" :value="proMinText" :maxlength="6" placeholder="60"
+							placeholder-style="color:#B9B1A0" @input="onProMinInput" />
+						<text class="pro-unit">秒</text>
+						<text class="pro-label pro-label-2">最长</text>
+						<input class="pro-input" type="number" :value="proMaxText" :maxlength="6" placeholder="180"
+							placeholder-style="color:#B9B1A0" @input="onProMaxInput" />
+						<text class="pro-unit">秒</text>
+					</view>
+					<text class="pro-tip">空闲超过这个区间里的随机时长，AI 就主动说话；最短不低于 10 秒</text>
+				</view>
+
+				<view v-if="proactiveOn" class="switch-row" @click="toggleProPass">
+					<view class="switch-main">
+						<text class="switch-t">允许跳过(实验性)</text>
+						<text class="switch-s">开启时 AI 可以用 [pass] 跳过某次不想说的主动发言（跳过也算一次未回复）</text>
+					</view>
+					<view class="tg" :style="proPassOn ? 'background-color:#1C1A16;justify-content:flex-end' : 'background-color:#DCD4C4;justify-content:flex-start'">
+						<view class="tg-knob"></view>
+					</view>
+				</view>
+				<view class="hair"></view>
+
+				<view class="savebtn" @click="onSave">
+					<text class="savebtn-t">保存设定</text>
+				</view>
+
+				<view v-if="hasChar" class="resetbtn" @click="onReset">
+					<text class="resetbtn-t">恢复成角色卡里的设定</text>
+				</view>
+
+				<view class="pad"></view>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script lang="uts">
+	import { Chat, Character, avatarText, findChat, findChar, updateChatSettings, isAffinityOn, isTimeOn, isMemHintOn, setChatToggles, isProactiveOn, isProPassOn, proMinSecOf, proMaxSecOf, setProactive, parseNumberText } from '../../utils/store.uts'
+	import { PickResult, pickAvatar, removeAvatarFile } from '../../utils/image.uts'
+	import { optStr } from '../../utils/opt.uts'
+
+	export default {
+		data() {
+			return {
+				headPad: 18,
+				chatId: '',
+				name: '',
+				userName: '',
+				prompt: '',
+				avatarPath: '',
+				hasChar: false,
+				affinityOn: true,
+				timeOn: true,
+				memHintOn: true,
+				proactiveOn: true,
+				proPassOn: true,
+				proMinText: '60',
+				proMaxText: '180',
+				charPrompt: '',
+				charUserName: '',
+				charName: '',
+				charAvatar: '',
+				varChar: '{{char}}',
+				varUser: '{{user}}',
+			}
+		},
+		onLoad(options: OnLoadOptions) {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 14
+				}
+			} catch (e) {
+				// 默认值
+			}
+			const id = optStr(options, 'chatId')
+			if (id.length == 0) {
+				return
+			}
+			this.chatId = id
+			const chat = findChat(id)
+			if (chat == null) {
+				return
+			}
+			const c = chat!
+			this.name = c.charName
+			this.avatarPath = c.charAvatar != null ? c.charAvatar! : ''
+			this.userName = c.userName != null ? c.userName! : ''
+			this.prompt = c.prompt != null ? c.prompt! : ''
+			this.affinityOn = isAffinityOn(c)
+			this.timeOn = isTimeOn(c)
+			this.memHintOn = isMemHintOn(c)
+			this.proactiveOn = isProactiveOn(c)
+			this.proPassOn = isProPassOn(c)
+			this.proMinText = proMinSecOf(c).toString()
+			this.proMaxText = proMaxSecOf(c).toString()
+
+
+			const ch = findChar(c.charId)
+			if (ch != null) {
+				this.hasChar = true
+				this.charName = ch!.name
+				this.charUserName = ch!.userName
+				this.charPrompt = ch!.prompt
+				this.charAvatar = ch!.avatar != null ? ch!.avatar! : ''
+				// 会话里没单独设过的，用角色卡的填上
+				if (this.userName.length == 0) {
+					this.userName = this.charUserName
+				}
+				if (this.prompt.length == 0) {
+					this.prompt = this.charPrompt
+				}
+			}
+		},
+		methods: {
+			avatarText(name: string): string {
+				return avatarText(name)
+			},
+			onPickAvatar(): void {
+				pickAvatar((r: PickResult) => {
+					// 取消选择就安静地什么都不做
+					if (!r.ok) {
+						return
+					}
+					if (this.avatarPath.length > 0 && this.avatarPath != r.path) {
+						removeAvatarFile(this.avatarPath)
+					}
+					this.avatarPath = r.path
+				})
+			},
+			onClearAvatar(): void {
+				if (this.avatarPath.length > 0) {
+					removeAvatarFile(this.avatarPath)
+				}
+				this.avatarPath = ''
+			},
+			onNameInput(e: InputEvent): void {
+				this.name = e.detail.value
+			},
+			onUserInput(e: InputEvent): void {
+				this.userName = e.detail.value
+			},
+			onPromptInput(e: InputEvent): void {
+				this.prompt = e.detail.value
+			},
+			insertVar(v: string): void {
+				const p = this.prompt
+				if (p.length == 0) {
+					this.prompt = v
+					return
+				}
+				const last = p.substring(p.length - 1, p.length)
+				if (last == ' ') {
+					this.prompt = p + v
+					return
+				}
+				this.prompt = p + ' ' + v
+			},
+			toggleAffinity(): void {
+				this.affinityOn = !this.affinityOn
+			},
+			toggleTime(): void {
+				this.timeOn = !this.timeOn
+			},
+			toggleMemHint(): void {
+				this.memHintOn = !this.memHintOn
+			},
+			toggleProactive(): void {
+				this.proactiveOn = !this.proactiveOn
+			},
+			toggleProPass(): void {
+				this.proPassOn = !this.proPassOn
+			},
+			onProMinInput(e: InputEvent): void {
+				this.proMinText = e.detail.value
+			},
+			onProMaxInput(e: InputEvent): void {
+				this.proMaxText = e.detail.value
+			},
+			onReset(): void {
+				this.name = this.charName
+				this.userName = this.charUserName
+				this.prompt = this.charPrompt
+				this.avatarPath = this.charAvatar
+				uni.showToast({ title: '已恢复，记得保存', icon: 'none' })
+			},
+			onSave(): void {
+				const n = this.name.trim()
+				if (n.length == 0) {
+					uni.showToast({ title: '角色昵称不能为空', icon: 'none' })
+					return
+				}
+				updateChatSettings(this.chatId, n, this.userName.trim(), this.prompt.trim(), this.avatarPath)
+				setChatToggles(this.chatId, this.affinityOn, this.timeOn, this.memHintOn)
+				// 主动消息间隔：最低 60 秒，上限不低于下限
+				let pMin = parseNumberText(this.proMinText)
+				if (pMin < 10) {
+					pMin = 10
+				}
+				let pMax = parseNumberText(this.proMaxText)
+				if (pMax < pMin) {
+					pMax = pMin
+				}
+				setProactive(this.chatId, this.proactiveOn, pMin, pMax, this.proPassOn)
+				uni.showToast({ title: '已保存', icon: 'none' })
+				setTimeout(() => {
+					uni.navigateBack()
+				}, 400)
+			},
+			goBack(): void {
+				uni.navigateBack()
+			}
+		}
+	}
+</script>
+
+<style>
+	.page {
+		flex: 1;
+		flex-direction: column;
+		background-color: #F7F2E8;
+	}
+
+	.nav {
+		flex-direction: row;
+		align-items: flex-end;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 10px;
+	}
+
+	.back {
+		width: 34px;
+		height: 30px;
+		justify-content: flex-end;
+		padding-bottom: 4px;
+	}
+
+	.back-t {
+		font-size: 20px;
+		color: #1C1A16;
+	}
+
+	.title {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 23px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #1C1A16;
+		margin-left: 6px;
+	}
+
+	.rule {
+		height: 2px;
+		background-color: #1C1A16;
+		margin-left: 24px;
+		margin-right: 24px;
+	}
+
+	.body {
+		flex: 1;
+	}
+
+	.wrap {
+		padding-left: 24px;
+		padding-right: 24px;
+	}
+
+	.hint {
+		font-size: 12px;
+		line-height: 19px;
+		color: #8A8375;
+		margin-top: 14px;
+	}
+
+	.hero {
+		flex-direction: row;
+		align-items: center;
+		padding-top: 16px;
+		padding-bottom: 16px;
+	}
+
+	.hero-ava {
+		width: 64px;
+		height: 64px;
+		border-radius: 10px;
+		background-color: #EDE5D5;
+		align-items: center;
+		justify-content: center;
+		overflow: hidden;
+	}
+
+	.hero-img {
+		width: 64px;
+		height: 64px;
+	}
+
+	.hero-ava-t {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 26px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.hero-main {
+		flex: 1;
+		margin-left: 12px;
+	}
+
+	.hero-name {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 20px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.hero-actions {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 8px;
+	}
+
+	.hero-link {
+		font-size: 12px;
+		color: #B4553C;
+		border-bottom-width: 1px;
+		border-bottom-style: solid;
+		border-bottom-color: #B4553C;
+		padding-bottom: 1px;
+	}
+
+	.hero-link-del {
+		font-size: 12px;
+		color: #A9A292;
+		margin-left: 14px;
+	}
+
+	.field {
+		padding-top: 18px;
+	}
+
+	.label {
+		font-size: 11px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.input {
+		height: 38px;
+		font-size: 15px;
+		color: #1C1A16;
+		margin-top: 4px;
+	}
+
+	.textarea {
+		width: 100%;
+		height: 150px;
+		font-size: 14px;
+		color: #1C1A16;
+		margin-top: 6px;
+		line-height: 22px;
+	}
+
+	.input-line {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.tip-row {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 8px;
+		flex-wrap: wrap;
+	}
+
+	.tip-t {
+		font-size: 11.5px;
+		color: #A9A292;
+		margin-right: 5px;
+	}
+
+	.chip {
+		padding-left: 6px;
+		padding-right: 6px;
+		padding-top: 2px;
+		padding-bottom: 2px;
+		border-width: 1px;
+		border-style: solid;
+		border-color: #C9A38F;
+		border-radius: 3px;
+		margin-right: 5px;
+	}
+
+	.chip-t {
+		font-family: monospace;
+		font-size: 11px;
+		color: #B4553C;
+	}
+
+	.tip {
+		font-size: 11px;
+		line-height: 17px;
+		color: #A9A292;
+		margin-top: 7px;
+	}
+
+	.section {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding-top: 24px;
+		padding-bottom: 4px;
+	}
+
+	.sec-t {
+		font-size: 11px;
+		letter-spacing: 3px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.hair {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.switch-row {
+		flex-direction: row;
+		align-items: center;
+		padding-top: 14px;
+		padding-bottom: 14px;
+	}
+
+	.switch-main {
+		flex: 1;
+	}
+
+	.switch-t {
+		font-size: 15px;
+		color: #1C1A16;
+	}
+
+	.switch-s {
+		font-size: 11px;
+		line-height: 16px;
+		color: #A9A292;
+		margin-top: 4px;
+	}
+
+	.tg {
+		width: 42px;
+		height: 24px;
+		border-radius: 12px;
+		padding: 3px;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.tg-knob {
+		width: 18px;
+		height: 18px;
+		border-radius: 9px;
+		background-color: #F7F2E8;
+	}
+
+	.pro-box {
+		flex-direction: column;
+		padding-bottom: 14px;
+	}
+
+	.pro-row {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.pro-label {
+		font-size: 12px;
+		color: #8A8375;
+		margin-right: 6px;
+	}
+
+	.pro-label-2 {
+		margin-left: 16px;
+	}
+
+	.pro-input {
+		width: 56px;
+		height: 30px;
+		font-size: 14px;
+		color: #1C1A16;
+		border-width: 1px;
+		border-style: solid;
+		border-color: #DCD4C4;
+		border-radius: 3px;
+		padding-left: 8px;
+		padding-right: 8px;
+	}
+
+	.pro-unit {
+		font-size: 12px;
+		color: #8A8375;
+		margin-left: 5px;
+	}
+
+	.pro-tip {
+		font-size: 11px;
+		line-height: 17px;
+		color: #A9A292;
+		margin-top: 8px;
+	}
+
+	.note {
+		font-size: 11px;
+		line-height: 17px;
+		color: #B9B1A0;
+		margin-top: 20px;
+	}
+
+	.savebtn {
+		flex-direction: row;
+		margin-top: 20px;
+		padding-top: 14px;
+		padding-bottom: 14px;
+		background-color: #1C1A16;
+		border-radius: 3px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.savebtn-t {
+		font-size: 13px;
+		letter-spacing: 3px;
+		color: #F7F2E8;
+	}
+
+	.resetbtn {
+		margin-top: 16px;
+		align-items: center;
+	}
+
+	.resetbtn-t {
+		font-size: 12px;
+		color: #B4553C;
+	}
+
+	.pad {
+		height: 30px;
+	}
+</style>

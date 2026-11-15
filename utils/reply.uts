@@ -1,0 +1,135 @@
+/**
+ * 把一段回复切成几条消息，模拟真人连发
+ * 规则：
+ * - 在 。！？~…?! 之后断开（标点跟着前一句）
+ * - 紧跟的引号、右括号、连续标点一起归入前一句
+ * - 换行也算断点
+ * - 太短的片段并到上一段，总条数有上限（多出来的并到最后一条）
+ */
+const SPLIT_PUNCT: string = '。！？~～…?!'
+const CLOSERS: string = '”"」』）)】'
+const MAX_PARTS: number = 6
+const MIN_PART_LEN: number = 2
+
+/** 把连续空白（空格 / 换行 / 全角空格）压成一个空格，并去掉首尾空白 */
+export function squeezeSpace(s: string): string {
+	let out = ''
+	let prevSpace = false
+	for (let i = 0; i < s.length; i++) {
+		const ch = s.substring(i, i + 1)
+		const isSpace = ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t' || ch == '　'
+		if (isSpace) {
+			if (!prevSpace && out.length > 0) {
+				out += ' '
+			}
+			prevSpace = true
+		} else {
+			out += ch
+			prevSpace = false
+		}
+	}
+	return out.trim()
+}
+
+/**
+ * 流式用：返回最后一个「句子已经完整」的位置（下标）
+ * 返回 -1 表示还没有可切的地方；返回值可以直接当 substring 的结束位置
+ */
+export function lastSplitIndex(text: string): number {
+	let lastEnd = -1
+	let i = 0
+	while (i < text.length) {
+		const ch = text.substring(i, i + 1)
+		if (ch == '\n' || ch == '\r') {
+			lastEnd = i + 1
+			i++
+			continue
+		}
+		if (SPLIT_PUNCT.indexOf(ch) >= 0) {
+			let j = i + 1
+			while (j < text.length) {
+				const nx = text.substring(j, j + 1)
+				if (SPLIT_PUNCT.indexOf(nx) >= 0 || CLOSERS.indexOf(nx) >= 0) {
+					j++
+				} else {
+					break
+				}
+			}
+			lastEnd = j
+			i = j
+			continue
+		}
+		i++
+	}
+	return lastEnd
+}
+
+export function splitReply(text: string): Array<string> {
+	const raw: Array<string> = []
+	let buf = ''
+	let i = 0
+	while (i < text.length) {
+		const ch = text.substring(i, i + 1)
+		if (ch == '\n' || ch == '\r') {
+			const t = buf.trim()
+			if (t.length > 0) {
+				raw.push(t)
+			}
+			buf = ''
+			i++
+			continue
+		}
+		buf += ch
+		if (SPLIT_PUNCT.indexOf(ch) >= 0) {
+			// 后面的引号 / 右括号 / 重复标点跟着这一句
+			let j = i + 1
+			while (j < text.length) {
+				const nx = text.substring(j, j + 1)
+				if (SPLIT_PUNCT.indexOf(nx) >= 0 || CLOSERS.indexOf(nx) >= 0) {
+					buf += nx
+					j++
+				} else {
+					break
+				}
+			}
+			const t = buf.trim()
+			if (t.length > 0) {
+				raw.push(t)
+			}
+			buf = ''
+			i = j
+			continue
+		}
+		i++
+	}
+	const tail = buf.trim()
+	if (tail.length > 0) {
+		raw.push(tail)
+	}
+
+	// 太短的片段并到上一段
+	const merged: Array<string> = []
+	for (let k = 0; k < raw.length; k++) {
+		const s = raw[k]
+		if (merged.length > 0 && s.length < MIN_PART_LEN) {
+			merged[merged.length - 1] = merged[merged.length - 1] + s
+		} else {
+			merged.push(s)
+		}
+	}
+
+	if (merged.length <= MAX_PARTS) {
+		return merged
+	}
+	// 条数上限：前面几段保留，剩下的并成最后一条
+	const out: Array<string> = []
+	for (let k = 0; k < MAX_PARTS - 1; k++) {
+		out.push(merged[k])
+	}
+	let buffered = ''
+	for (let k = MAX_PARTS - 1; k < merged.length; k++) {
+		buffered += merged[k]
+	}
+	out.push(buffered)
+	return out
+}

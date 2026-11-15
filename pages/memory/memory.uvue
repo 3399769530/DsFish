@@ -1,0 +1,719 @@
+<template>
+	<view class="page">
+
+		<!-- 头部 -->
+		<view class="nav" :style="'padding-top:' + headPad + 'px'">
+			<view class="back" @click="goBack">
+				<text class="back-t">←</text>
+			</view>
+			<text class="title">记忆管理</text>
+		</view>
+		<view class="rule"></view>
+
+		<!-- 搜索 -->
+		<view class="search-wrap">
+			<input class="search" :value="keyword" placeholder="搜记忆正文或标签…" placeholder-style="color:#B9B1A0"
+				:maxlength="40" @input="onSearch" />
+			<view v-if="keyword.length > 0" class="search-clear" @click="clearSearch">
+				<text class="search-clear-t">×</text>
+			</view>
+		</view>
+
+		<!-- 有效 / 回收站 -->
+		<view class="tabs-row">
+			<view class="seg" @click="switchTab(0)">
+				<text class="seg-t" :style="tab == 0 ? 'color:#1C1A16;font-weight:600' : 'color:#A9A292'">有效 {{ totalActive }}</text>
+				<view class="seg-mark" :style="tab == 0 ? 'background-color:#1C1A16' : 'background-color:#00000000'"></view>
+			</view>
+			<view class="seg" @click="switchTab(1)">
+				<text class="seg-t" :style="tab == 1 ? 'color:#1C1A16;font-weight:600' : 'color:#A9A292'">回收站 {{ totalDeleted }}</text>
+				<view class="seg-mark" :style="tab == 1 ? 'background-color:#1C1A16' : 'background-color:#00000000'"></view>
+			</view>
+			<view class="tab-space"></view>
+			<view v-if="totalActive + totalDeleted > 0" class="del-btn" @click="onAskClear">
+				<image class="del-ico" src="/static/delete.png" mode="aspectFit"></image>
+			</view>
+		</view>
+
+		<scroll-view class="body" scroll-y="true">
+			<view class="wrap">
+				<view v-if="isFull()" class="warn">
+					<text class="warn-t">记忆已满 {{ limitLabel() }} 条，新的存不进来了。删掉一些不用的再继续。</text>
+				</view>
+				<text v-if="shown.length == 0" class="empty">{{ emptyText }}</text>
+
+				<view v-for="m in shown" :key="m.id" class="card">
+					<!-- 第一行：正文（单行省略）+ 强度 -->
+					<view class="row1" @click="onRowTap(m)">
+						<text class="card-text">{{ textOf(m) }}</text>
+						<view class="str-wrap">
+							<text class="str-n" :style="'color:' + strColor(m)">{{ strengthOf(m) }}</text>
+							<view class="str-bar">
+								<view class="str-fill" :style="'width:' + strPct(m) + '%;background-color:' + strColor(m)"></view>
+							</view>
+							<text v-if="strengthIsMax(m)" class="str-max">极致</text>
+						</view>
+					</view>
+					<!-- 第二行：标签 + 来源 + 操作 -->
+					<view class="row2">
+						<text class="tagline">{{ tagLine(m) }}</text>
+						<text v-if="tab == 0" class="act" @click="onEdit(m)">编辑</text>
+						<text v-if="tab == 0" class="act-del" @click="onDelete(m.id)">删除</text>
+						<text v-if="tab == 1" class="act" @click="onRestore(m.id)">还原</text>
+						<text v-if="tab == 1" class="act-note">{{ leftOf(m) }} 天后清</text>
+					</view>
+				</view>
+
+				<view v-if="tab == 1 && totalDeleted > 0" class="tip">
+					<text class="tip-t">回收站里的记忆 {{ keepLabel() }} 天后自动清除，期间可随时还原。</text>
+				</view>
+				<view v-if="tab == 0 && totalActive > 0" class="tip">
+					<text class="tip-t">强度：新记忆 60；被查询时增加。长期未被查询的记忆会自动进回收站。</text>
+				</view>
+
+				<view class="pad"></view>
+			</view>
+		</scroll-view>
+
+		<!-- 编辑弹层：面板钉屏幕顶部、从上方下拉——键盘从底下弹永远挡不到 -->
+		<view v-if="editOpen" class="ed-mask" :style="edShown ? 'opacity:1' : 'opacity:0'" @click="closeEdit"></view>
+		<view v-if="editOpen" class="ed-panel" :style="'padding-top:' + headPad.toString() + 'px;transform: translateY(' + (edShown ? '0px' : '-420px') + ')'">
+			<view class="ed-inner">
+				<view class="sheet-head">
+					<text class="sheet-title">编辑记忆</text>
+					<text class="sheet-close" @click="closeEdit">取消</text>
+				</view>
+				<view class="hair"></view>
+				<textarea class="edit-text" :value="editText" :maxlength="200" :adjust-position="false"
+					placeholder="记了什么…" placeholder-style="color:#B9B1A0" @input="onEditText"></textarea>
+				<view class="hair"></view>
+				<view class="edit-field">
+					<text class="edit-label">标签</text>
+					<input class="edit-tags" :value="editTags" :maxlength="40" :adjust-position="false"
+						placeholder="1~3 个，空格隔开" placeholder-style="color:#B9B1A0" @input="onEditTags" />
+				</view>
+				<view class="hair"></view>
+				<view class="savebtn" @click="onSaveEdit">
+					<text class="savebtn-t">保存</text>
+				</view>
+			</view>
+		</view>
+
+		<!-- 清空确认 -->
+		<paper-sheet :visible="sheetOpen" :title="sheetTitle" :items="sheetItems" :dangerIndex="sheetDanger"
+			@pick="onSheetPick" @close="closeSheet"></paper-sheet>
+	</view>
+</template>
+
+<script lang="uts">
+	import { Memory, listActiveMemories, listDeletedMemories, removeMemory, restoreMemory, updateMemory, clearAllMemories, purgeDeleted, autoForget, parseTags, keepDaysLeft, memCreatedLabel, memChatLabel, strengthOf as memStrength, strengthIsMax, strengthRatio, MEM_LIMIT, MEM_KEEP_DAYS, MEM_FORGET_DAYS } from '../../utils/memory.uts'
+	import PaperSheet from '../../components/paper-sheet/paper-sheet.uvue'
+
+	/** 关键词过滤：正文或任一标签包含就算命中 */
+	function filterList(list: Array<Memory>, kw: string): Array<Memory> {
+		const out: Array<Memory> = []
+		const k = kw.toLowerCase()
+		for (let i = 0; i < list.length; i++) {
+			const m = list[i]
+			let hit = m.text.toLowerCase().indexOf(k) >= 0
+			if (!hit) {
+				for (let j = 0; j < m.tags.length; j++) {
+					if (m.tags[j].toLowerCase().indexOf(k) >= 0) {
+						hit = true
+					}
+				}
+			}
+			if (hit) {
+				out.push(m)
+			}
+		}
+		return out
+	}
+
+	export default {
+		components: {
+			PaperSheet
+		},
+		data() {
+			return {
+				headPad: 18,
+				keyword: '',
+				tab: 0,
+				shown: [] as Array<Memory>,
+				totalActive: 0,
+				totalDeleted: 0,
+				emptyText: '还没有记忆',
+				editOpen: false,
+				edShown: false,
+				editId: '',
+				editText: '',
+				editTags: '',
+				sheetOpen: false,
+				sheetTitle: '',
+				sheetItems: new Array<string>(),
+				sheetDanger: -1
+			}
+		},
+		onLoad() {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 14
+				}
+			} catch (e) {
+				// 默认值
+			}
+			// 先把过期的东西处理掉：60 天没引用的进回收站，回收站超过 3 天的真删
+			autoForget()
+			purgeDeleted()
+			this.refresh()
+		},
+		methods: {
+			refresh(): void {
+				const kw = this.keyword.trim()
+				const act = listActiveMemories()
+				const del = listDeletedMemories()
+				this.totalActive = act.length
+				this.totalDeleted = del.length
+				const src = this.tab == 0 ? act : del
+				this.shown = kw.length == 0 ? src : filterList(src, kw)
+				if (this.shown.length == 0) {
+					if (kw.length > 0) {
+						this.emptyText = '没有匹配「' + kw + '」的记忆'
+					} else if (this.tab == 0) {
+						this.emptyText = '还没有记忆。聊到值得记的事，模型会自己存进来'
+					} else {
+						this.emptyText = '回收站是空的'
+					}
+				}
+			},
+			switchTab(i: number): void {
+				this.tab = i
+				this.refresh()
+			},
+			onSearch(e: InputEvent): void {
+				this.keyword = e.detail.value
+				this.refresh()
+			},
+			clearSearch(): void {
+				this.keyword = ''
+				this.refresh()
+			},
+			/** 第一行只显示一小段，避免长文本折行（点这一行能看全文并编辑） */
+			textOf(m: Memory): string {
+				const t = m.text
+				if (t.length <= 18) {
+					return t
+				}
+				return t.substring(0, 18) + '…'
+			},
+			/** 点第一行：有效记忆直接打开编辑，回收站里不响应 */
+			onRowTap(m: Memory): void {
+				if (this.tab == 0) {
+					this.onEdit(m)
+				}
+			},
+			createdOf(m: Memory): string {
+				return memCreatedLabel(m)
+			},
+			/** 第二行左侧：#标签 #标签 · 来源会话 */
+			tagLine(m: Memory): string {
+				let s = ''
+				for (let i = 0; i < m.tags.length; i++) {
+					if (i > 0) {
+						s += '  '
+					}
+					s += '#' + m.tags[i]
+				}
+				const chat = memChatLabel(m)
+				if (chat.length > 0) {
+					s += '  ·  ' + chat
+				}
+				return s
+			},
+			chatOf(m: Memory): string {
+				return memChatLabel(m)
+			},
+			leftOf(m: Memory): string {
+				return keepDaysLeft(m).toString()
+			},
+			/** 上限 / 保留天数 / 忘却天数：都给带返回类型的方法，模板里不对 any 做运算 */
+			isFull(): boolean {
+				return this.totalActive >= MEM_LIMIT
+			},
+			limitLabel(): string {
+				return MEM_LIMIT.toString()
+			},
+			keepLabel(): string {
+				return MEM_KEEP_DAYS.toString()
+			},
+			forgetLabel(): string {
+				return MEM_FORGET_DAYS.toString()
+			},
+			strengthOf(m: Memory): string {
+				return memStrength(m).toString()
+			},
+			strengthIsMax(m: Memory): boolean {
+				return strengthIsMax(m)
+			},
+			strPct(m: Memory): string {
+				return Math.round(strengthRatio(m) * 100).toString()
+			},
+			strColor(m: Memory): string {
+				const s = memStrength(m)
+				if (s >= 90) {
+					return '#A8302A'
+				}
+				if (s >= 75) {
+					return '#B4553C'
+				}
+				if (s >= 60) {
+					return '#C1763A'
+				}
+				return '#A9A292'
+			},
+			onEdit(m: Memory): void {
+				this.editId = m.id
+				this.editText = m.text
+				let tags = ''
+				for (let i = 0; i < m.tags.length; i++) {
+					if (i > 0) {
+						tags += ' '
+					}
+					tags += m.tags[i]
+				}
+				this.editTags = tags
+				this.editOpen = true
+				// 先以「在上方屏外」渲染一帧，下一帧再下拉到位，transition 才能生效
+				this.edShown = false
+				setTimeout(() => {
+					this.edShown = true
+				}, 24)
+			},
+			closeEdit(): void {
+				this.editOpen = false
+				this.edShown = false
+				uni.hideKeyboard()
+			},
+			onEditText(e: InputEvent): void {
+				this.editText = e.detail.value
+			},
+			onEditTags(e: InputEvent): void {
+				this.editTags = e.detail.value
+			},
+			onSaveEdit(): void {
+				const t = this.editText.trim()
+				if (t.length == 0) {
+					uni.showToast({ title: '内容不能为空', icon: 'none' })
+					return
+				}
+				const ok = updateMemory(this.editId, t, parseTags(this.editTags))
+				this.editOpen = false
+				this.edShown = false
+				uni.hideKeyboard()
+				this.refresh()
+				uni.showToast({ title: ok ? '已保存' : '保存失败', icon: 'none' })
+			},
+			onDelete(id: string): void {
+				removeMemory(id)
+				this.refresh()
+				uni.showToast({ title: '已移入回收站（' + MEM_KEEP_DAYS.toString() + ' 天后清除）', icon: 'none' })
+			},
+			onRestore(id: string): void {
+				restoreMemory(id)
+				this.refresh()
+				uni.showToast({ title: '已还原', icon: 'none' })
+			},
+			onAskClear(): void {
+				this.sheetTitle = '清空全部记忆？（回收站里的也一起删掉，不可恢复）'
+				this.sheetItems = ['确认清空']
+				this.sheetDanger = 0
+				this.sheetOpen = true
+			},
+			closeSheet(): void {
+				this.sheetOpen = false
+			},
+			onSheetPick(i: number): void {
+				this.sheetOpen = false
+				if (i != 0) {
+					return
+				}
+				clearAllMemories()
+				this.refresh()
+				uni.showToast({ title: '记忆已清空', icon: 'none' })
+			},
+			goBack(): void {
+				uni.navigateBack()
+			}
+		}
+	}
+</script>
+
+<style>
+	.page {
+		flex: 1;
+		flex-direction: column;
+		background-color: #F7F2E8;
+		position: relative;
+		overflow: hidden;
+	}
+
+	.nav {
+		flex-direction: row;
+		align-items: flex-end;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 10px;
+	}
+
+	.back {
+		width: 34px;
+		height: 30px;
+		justify-content: flex-end;
+		padding-bottom: 4px;
+	}
+
+	.back-t {
+		font-size: 20px;
+		color: #1C1A16;
+	}
+
+	.title {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 23px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #1C1A16;
+		margin-left: 6px;
+	}
+
+	.nav-space {
+		flex: 1;
+	}
+
+	.tab-space {
+		flex: 1;
+	}
+
+	.del-btn {
+		width: 30px;
+		height: 24px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.del-ico {
+		width: 18px;
+		height: 18px;
+		opacity: 0.65;
+	}
+
+	.rule {
+		height: 2px;
+		background-color: #1C1A16;
+		margin-left: 24px;
+		margin-right: 24px;
+	}
+
+	.search-wrap {
+		flex-direction: row;
+		align-items: center;
+		margin-left: 24px;
+		margin-right: 24px;
+		margin-top: 14px;
+		padding-left: 12px;
+		padding-right: 8px;
+		height: 38px;
+		background-color: #EFE7D8;
+		border-radius: 3px;
+	}
+
+	.search {
+		flex: 1;
+		height: 38px;
+		font-size: 14px;
+		color: #1C1A16;
+	}
+
+	.search-clear {
+		width: 26px;
+		height: 26px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.search-clear-t {
+		font-size: 17px;
+		color: #A9A292;
+	}
+
+	.tabs-row {
+		flex-direction: row;
+		align-items: center;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-top: 14px;
+		padding-bottom: 6px;
+	}
+
+	.seg {
+		margin-right: 22px;
+		align-items: center;
+	}
+
+	.seg-t {
+		font-size: 13px;
+		letter-spacing: 1px;
+	}
+
+	.seg-mark {
+		width: 16px;
+		height: 2px;
+		margin-top: 5px;
+	}
+
+	.body {
+		flex: 1;
+	}
+
+	.wrap {
+		padding-left: 24px;
+		padding-right: 24px;
+	}
+
+	.empty {
+		font-size: 12.5px;
+		line-height: 19px;
+		color: #A9A292;
+		padding-top: 26px;
+		text-align: center;
+	}
+
+	.warn {
+		margin-top: 14px;
+		padding: 10px 12px;
+		background-color: #F3E7DC;
+		border-left-width: 2px;
+		border-left-style: solid;
+		border-left-color: #B4553C;
+	}
+
+	.warn-t {
+		font-size: 11.5px;
+		line-height: 17px;
+		color: #B4553C;
+	}
+
+	/* ---------- 一条记忆：两行 ---------- */
+	.card {
+		padding-top: 11px;
+		padding-bottom: 10px;
+		border-bottom-width: 1px;
+		border-bottom-style: solid;
+		border-bottom-color: #DCD4C4;
+	}
+
+	/* 第一行：正文 + 强度 */
+	.row1 {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.card-text {
+		flex: 1;
+		font-size: 13.5px;
+		color: #1C1A16;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.str-wrap {
+		flex-direction: row;
+		align-items: center;
+		flex-shrink: 0;
+		margin-left: 10px;
+	}
+
+	.str-n {
+		font-family: monospace;
+		font-size: 11px;
+		font-weight: bold;
+	}
+
+	.str-bar {
+		width: 26px;
+		height: 3px;
+		background-color: #E4DBC9;
+		border-radius: 2px;
+		overflow: hidden;
+		margin-left: 5px;
+	}
+
+	.str-fill {
+		height: 3px;
+		border-radius: 2px;
+	}
+
+	.str-max {
+		font-size: 9.5px;
+		letter-spacing: 0.5px;
+		color: #A8302A;
+		margin-left: 4px;
+	}
+
+	/* 第二行：标签 + 来源 + 操作 */
+	.row2 {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 5px;
+	}
+
+	.tagline {
+		flex: 1;
+		font-size: 10.5px;
+		color: #B4553C;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.act {
+		font-size: 11px;
+		color: #B4553C;
+		margin-left: 14px;
+		flex-shrink: 0;
+	}
+
+	.act-del {
+		font-size: 11px;
+		color: #8A8375;
+		margin-left: 14px;
+		flex-shrink: 0;
+	}
+
+	.act-note {
+		font-size: 10px;
+		color: #B9B1A0;
+		margin-left: 10px;
+		flex-shrink: 0;
+	}
+
+	.tip {
+		padding-top: 14px;
+	}
+
+	.tip-t {
+		font-size: 11px;
+		line-height: 17px;
+		color: #B9B1A0;
+	}
+
+	.pad {
+		height: 40px;
+	}
+
+	/* 编辑弹层：面板绝对钉屏幕顶部、从上方下拉入场；键盘在底下永远挡不到 */
+	.ed-mask {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(28, 26, 22, 0.32);
+		transition-property: opacity;
+		transition-duration: 180ms;
+		transition-timing-function: ease-out;
+		z-index: 90;
+	}
+
+	.ed-panel {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		flex-shrink: 0;
+		background-color: #F7F2E8;
+		border-bottom-left-radius: 10px;
+		border-bottom-right-radius: 10px;
+		transition-property: transform;
+		transition-duration: 260ms;
+		transition-timing-function: ease-out;
+		/* 盖住一切内容，但要低于 paper-sheet 确认层（100） */
+		z-index: 95;
+	}
+
+	.ed-inner {
+		flex-direction: column;
+		padding-bottom: 18px;
+	}
+
+	.sheet-head {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding: 14px 24px;
+	}
+
+	.sheet-title {
+		font-size: 11px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.sheet-close {
+		font-size: 12px;
+		color: #A9A292;
+	}
+
+	.hair {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.edit-text {
+		width: 100%;
+		height: 110px;
+		font-size: 14px;
+		line-height: 21px;
+		color: #1C1A16;
+		padding: 14px 24px;
+	}
+
+	.edit-field {
+		flex-direction: row;
+		align-items: center;
+		padding: 12px 24px;
+	}
+
+	.edit-label {
+		font-size: 11px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+		width: 46px;
+	}
+
+	.edit-tags {
+		flex: 1;
+		height: 34px;
+		font-size: 13.5px;
+		color: #1C1A16;
+	}
+
+	.savebtn {
+		margin: 16px 24px 0 24px;
+		padding-top: 13px;
+		padding-bottom: 13px;
+		background-color: #1C1A16;
+		border-radius: 3px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.savebtn-t {
+		font-size: 13px;
+		letter-spacing: 3px;
+		color: #F7F2E8;
+	}
+</style>

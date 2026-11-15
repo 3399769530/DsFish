@@ -1,0 +1,27 @@
+# ---- HBuilderX / uni-app 构建产物 ----
+unpackage/
+.hbuilderx/
+
+# ---- Node ----
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+
+# ---- 本地工具 / 编辑器 ----
+.dsh/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/
+*.lnk
+
+# ---- 环境与密钥，禁止上传 ----
+.env
+.env.local
+*.pem
+*.key

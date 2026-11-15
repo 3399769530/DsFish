@@ -1,0 +1,1742 @@
+import { decayDelta, clampAffinity, AFF_START } from './affinity.uts'
+import { Memory, loadMemories, saveMemories, countActiveMemories } from './memory.uts'
+
+/**
+ * 摸鱼 Chat · 本地数据层
+ * 所有数据只存在本机，不上传。唯一联网的地方是对模型接口发请求。
+ */
+
+/** 初始对话里的一条 */
+export type InitDialog = {
+	/** 'assistant' 角色说的 / 'user' 用户说的 */
+	role: string
+	text: string
+}
+
+export type Character = {
+	id: string
+	/** 角色昵称：对话和提示词里用的名字 */
+	name: string
+	/** 列表备注名：只在外面列表显示，空则用角色昵称 */
+	label?: string
+	/** 用户昵称（我会/我） */
+	userName: string
+	/** 头像图片路径（本地文件），空则用昵称首字 */
+	avatar?: string
+	/** 系统提示词 */
+	prompt: string
+	/** 新会话的初始好感度 0~100（不填 = 20） */
+	affinity?: number
+	/** 开场对话，最多 10 条 */
+	dialogs: Array<InitDialog>
+}
+
+export type Msg = {
+	id: number
+	text: string
+	time: number
+	mine: boolean
+	/** 图片消息的本地路径（有图时 text 可能为空） */
+	image?: string
+	/** 图片的 base64 data URI，用于真正发给多模态模型（只在内存里用，不写进存储） */
+	imageData?: string
+	/** 480px 缩略图的永久文件路径；载入时读它回填 imageData，重启也能让模型看图 */
+	imageThumb?: string
+	/** 这条回复的情绪（[mood:xx] 解析结果） */
+	mood?: string
+	/** 旁白消息（骰子生成的事件，居中显示，不算我说的） */
+	narration?: boolean
+	/** 主动消息的隐形指令：照发给模型，但界面上不显示气泡 */
+	hidden?: boolean
+	/** 这条用户消息发出时的好感度快照；<系统信息> 按它显示，没有就退回当前值 */
+	aff?: number
+}
+
+export type Chat = {
+	id: string
+	charId: string
+	charName: string
+	charEmoji: string
+	/** 角色头像图片（开聊时从角色卡复制过来，可在本会话里单独换） */
+	charAvatar?: string
+	/** 本会话自己的系统提示词（不填则用角色卡的） */
+	prompt?: string
+	/** 本会话自己的用户昵称（不填则用角色卡的） */
+	userName?: string
+	/** 自定义会话名（不填则显示角色名） */
+	title?: string
+	/** 本会话的好感度 0~100 */
+	affinity?: number
+	/** 上次好感变动/结算的时间，用来算久不联系的衰减 */
+	affAt?: number
+	/** 关掉这条会话的好感度（缺省 = 开） */
+	affOff?: boolean
+	/** 关掉这条会话的时间/时间线传递（缺省 = 开） */
+	timeOff?: boolean
+	/** 关掉这条会话的「翻了下记忆」灰字提示（缺省 = 显示） */
+	memHintOff?: boolean
+	/** 关掉这条会话的主动消息（缺省 = 开） */
+	proactiveOff?: boolean
+	/** 主动消息间隔下限（秒，最少 60），缺省 60 */
+	proMinSec?: number
+	/** 主动消息间隔上限（秒，>= 下限），缺省 180 */
+	proMaxSec?: number
+	/** 禁止模型用 [pass] 跳过主动发言（缺省 = 允许） */
+	proPassOff?: boolean
+	/** 被压缩掉的那部分对话的摘要 */
+	summary?: string
+	/** 已经压缩进摘要的消息条数 */
+	summaryCount?: number
+	lastText: string
+	lastTime: number
+	/** 这条会话用哪家接口；老数据没有这个字段时按当前默认走 */
+	provider?: string
+}
+
+export type Profile = {
+	provider: string
+	baseUrl: string
+	apiKey: string
+	model: string
+	temperature: number
+	maxTokens: number
+	verified: boolean
+	lastError: string
+	/** 上下文预算（token），缺省 8000 */
+	contextTokens?: number
+}
+
+export type ProviderPreset = {
+	id: string
+	label: string
+	baseUrl: string
+	model: string
+	needKey: boolean
+	hint: string
+	/** 该服务商的默认上下文上限（不填用通用缺省） */
+	ctxDefault?: number
+}
+
+/** 会话列表用的一行 */
+export type ChatRow = {
+	id: string
+	name: string
+	emoji: string
+	preview: string
+	timeLabel: string
+	/** 角色头像图片；空则显示 emoji/首字 */
+	image: string
+}
+
+/** 角色卡列表用的一行 */
+export type CharRow = {
+	id: string
+	name: string
+	avatar: string
+	preview: string
+	userName: string
+	image: string
+}
+
+/** 聊天页气泡行（时间分隔已算好） */
+export type BubbleRow = {
+	id: string
+	text: string
+	mine: boolean
+	showTime: boolean
+	timeLabel: string
+	/** 有图就是图片消息 */
+	image: string
+	/** 情绪徽章（空 = 不显示） */
+	mood: string
+	/** 旁白消息 */
+	narration: boolean
+	/** 主动消息的指令：界面只显示一条居中提示 */
+	pro: boolean
+}
+
+/** 首页顶部状态行的完整展示内容（模板里不做判断） */
+export type StatusView = {
+	state: number
+	line: string
+	color: string
+	link: string
+	linkColor: string
+}
+
+/** 「我的」页里的本机身份 */
+export type Me = {
+	name: string
+	avatar?: string
+}
+
+/** 「我的」页的统计 */
+export type Stats = {
+	chats: number
+	chars: number
+	msgs: number
+	memories: number
+}
+
+/** 聊天页「用哪个接口聊」的可选项 */
+export type ProviderOption = {
+	id: string
+	label: string
+	model: string
+	stateText: string
+	color: string
+	active: boolean
+}
+
+const KEY_CHATS: string = 'dsfish_chats'
+const KEY_CHARS: string = 'dsfish_chars_v2'
+const KEY_MSG: string = 'dsfish_msgs_'
+const KEY_PROFILES: string = 'dsfish_profiles'
+const KEY_ACTIVE: string = 'dsfish_active'
+const KEY_ME: string = 'dsfish_me'
+
+const MIN: number = 60 * 1000
+const HOUR: number = 60 * MIN
+const DAY: number = 24 * HOUR
+
+/** 演示数据开关：真实使用前改成 false 即可全部关闭 */
+export const SHOW_DEMO: boolean = false
+
+export const PROVIDERS: Array<ProviderPreset> = [
+	{
+		id: 'deepseek',
+		label: 'DeepSeek',
+		baseUrl: 'https://api.deepseek.com/v1',
+		model: 'deepseek-flash',
+		needKey: true,
+		hint: '官方接口，只需填 Key',
+		ctxDefault: 200000
+	},
+	{
+		id: 'openai',
+		label: 'OpenAI',
+		baseUrl: 'https://api.openai.com/v1',
+		model: 'gpt-4o-mini',
+		needKey: true,
+		hint: '官方或中转地址'
+	},
+	{
+		id: 'ollama',
+		label: 'Ollama',
+		baseUrl: 'http://localhost:11434/v1',
+		model: 'llama3.1',
+		needKey: false,
+		hint: '本机运行，不需要 Key'
+	}
+]
+
+export function findProvider(id: string): ProviderPreset | null {
+	for (let i = 0; i < PROVIDERS.length; i++) {
+		if (PROVIDERS[i].id == id) {
+			return PROVIDERS[i]
+		}
+	}
+	return null
+}
+
+export function emptyProfile(): Profile {
+	return defaultProfile('deepseek')
+}
+
+/** 按服务商预设生成一份空配置 */
+export function defaultProfile(id: string): Profile {
+	const preset = findProvider(id)
+	let base = ''
+	let model = ''
+	if (preset != null) {
+		base = preset!.baseUrl
+		model = preset!.model
+	}
+	return {
+		provider: id,
+		baseUrl: base,
+		apiKey: '',
+		model: model,
+		temperature: 1.0,
+		maxTokens: 2048,
+		verified: false,
+		lastError: '',
+		contextTokens: preset != null && preset!.ctxDefault != null ? preset!.ctxDefault! : 128000
+	} as Profile
+}
+
+function findProfileIn(list: Array<Profile>, id: string): Profile | null {
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].provider == id) {
+			return list[i]
+		}
+	}
+	return null
+}
+
+/** 三家服务商的配置，缺的自动补齐 */
+export function loadProfiles(): Array<Profile> {
+	const out: Array<Profile> = []
+	const raw = uni.getStorageSync(KEY_PROFILES) as string | null
+	if (raw != null && raw!.length > 0) {
+		const list = JSON.parse<Array<Profile>>(raw!)
+		if (list != null) {
+			for (let i = 0; i < list!.length; i++) {
+				out.push(list![i])
+			}
+		}
+	}
+	for (let i = 0; i < PROVIDERS.length; i++) {
+		const id = PROVIDERS[i].id
+		if (findProfileIn(out, id) == null) {
+			out.push(defaultProfile(id))
+		}
+	}
+	return out
+}
+
+export function saveProfiles(list: Array<Profile>): void {
+	uni.setStorageSync(KEY_PROFILES, JSON.stringify(list))
+}
+
+export function getProfile(id: string): Profile {
+	const p = findProfileIn(loadProfiles(), id)
+	if (p == null) {
+		return defaultProfile(id)
+	}
+	return p!
+}
+
+/** 覆盖保存某一家服务商的配置 */
+export function updateProfile(p: Profile): void {
+	const list = loadProfiles()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].provider == p.provider) {
+			list[i] = p
+		}
+	}
+	saveProfiles(list)
+}
+
+export function getActiveProvider(): string {
+	const raw = uni.getStorageSync(KEY_ACTIVE) as string | null
+	if (raw != null && raw!.length > 0) {
+		return raw!
+	}
+	return 'deepseek'
+}
+
+export function setActiveProvider(id: string): void {
+	uni.setStorageSync(KEY_ACTIVE, id)
+}
+
+/** 首页/聊天页实际使用的那份配置 */
+export function getActiveProfile(): Profile {
+	const p = findProfileIn(loadProfiles(), getActiveProvider())
+	if (p == null) {
+		return defaultProfile('deepseek')
+	}
+	return p!
+}
+
+// ---------------- 时间 ----------------
+
+function pad2(n: number): string {
+	return n < 10 ? '0' + n.toString() : n.toString()
+}
+
+export function truncate(s: string, n: number): string {
+	if (s.length <= n) {
+		return s
+	}
+	return s.substring(0, n) + '…'
+}
+
+/** 把换行/多空格压成单行，列表预览用 */
+export function oneLine(s: string): string {
+	let out = ''
+	let lastSpace = false
+	for (let i = 0; i < s.length; i++) {
+		const ch = s.substring(i, i + 1)
+		if (ch == '\n' || ch == '\r' || ch == '\t' || ch == ' ') {
+			if (!lastSpace && out.length > 0) {
+				out += ' '
+			}
+			lastSpace = true
+			continue
+		}
+		out += ch
+		lastSpace = false
+	}
+	return out.trim()
+}
+
+export function fmtListTime(ts: number): string {
+	if (ts <= 0) {
+		return ''
+	}
+	const now = new Date()
+	const d = new Date(ts)
+	if (isSameDay(d, now)) {
+		return pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+	}
+	const yesterday = new Date(now.getTime() - DAY)
+	if (isSameDay(d, yesterday)) {
+		return '昨天'
+	}
+	return (d.getMonth() + 1).toString() + '月' + d.getDate().toString() + '日'
+}
+
+function isSameDay(a: Date, b: Date): boolean {
+	return a.getFullYear() == b.getFullYear() && a.getMonth() == b.getMonth() && a.getDate() == b.getDate()
+}
+
+// ---------------- 存储 ----------------
+
+export function loadChats(): Array<Chat> {
+	const out: Array<Chat> = []
+	const raw = uni.getStorageSync(KEY_CHATS) as string | null
+	if (raw == null || raw!.length == 0) {
+		return out
+	}
+	const list = JSON.parse<Array<Chat>>(raw)
+	if (list == null) {
+		return out
+	}
+	return list!
+}
+
+export function saveChats(list: Array<Chat>): void {
+	uni.setStorageSync(KEY_CHATS, JSON.stringify(list))
+}
+
+export function loadChars(): Array<Character> {
+	const out: Array<Character> = []
+	const raw = uni.getStorageSync(KEY_CHARS) as string | null
+	if (raw == null || raw!.length == 0) {
+		return out
+	}
+	const list = JSON.parse<Array<Character>>(raw)
+	if (list == null) {
+		return out
+	}
+	return list!
+}
+
+export function saveChars(list: Array<Character>): void {
+	uni.setStorageSync(KEY_CHARS, JSON.stringify(list))
+}
+
+export function loadMsgs(chatId: string): Array<Msg> {
+	const out: Array<Msg> = []
+	const raw = uni.getStorageSync(KEY_MSG + chatId) as string | null
+	if (raw == null || raw!.length == 0) {
+		return out
+	}
+	const list = JSON.parse<Array<Msg>>(raw!)
+	if (list == null) {
+		return out
+	}
+	return list!
+}
+
+/** 把消息里的 base64 图本体剥掉：JSON 只留路径，图本体在永久文件里 */
+function stripImageData(list: Array<Msg>): Array<Msg> {
+	const out: Array<Msg> = []
+	for (let i = 0; i < list.length; i++) {
+		const m = list[i]
+		if (m.imageData != null && m.imageData!.length > 0) {
+			const copy = {
+				id: m.id,
+				text: m.text,
+				time: m.time,
+				mine: m.mine,
+				image: m.image,
+				imageData: '',
+				imageThumb: m.imageThumb,
+				mood: m.mood,
+				narration: m.narration,
+				hidden: m.hidden
+			} as Msg
+			out.push(copy)
+		} else {
+			out.push(m)
+		}
+	}
+	return out
+}
+
+export function saveMsgs(chatId: string, list: Array<Msg>): void {
+	// imageData（base64 图本体）不进存储：图片文件已经存进应用永久目录，
+	// JSON 里只留路径。不然消息存储会被图撑大几十倍，越聊越卡
+	uni.setStorageSync(KEY_MSG + chatId, JSON.stringify(stripImageData(list)))
+}
+
+export function deleteChat(chatId: string): void {
+	const list = loadChats()
+	const next: Array<Chat> = []
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id != chatId) {
+			next.push(list[i])
+		}
+	}
+	saveChats(next)
+	uni.removeStorageSync(KEY_MSG + chatId)
+}
+
+// ---------------- 行构造 ----------------
+
+export function buildChatRows(list: Array<Chat>): Array<ChatRow> {
+	const sorted = list.slice(0)
+	sorted.sort((a: Chat, b: Chat): number => b.lastTime - a.lastTime)
+	const rows: Array<ChatRow> = []
+	for (let i = 0; i < sorted.length; i++) {
+		const c = sorted[i]
+		// 自定义了会话名就用它，否则用角色名
+		const custom = c.title != null ? c.title! : ''
+		const shown = custom.length > 0 ? custom : c.charName
+		rows.push({
+			id: c.id,
+			name: shown,
+			emoji: avatarText(shown),
+			preview: c.lastText.length > 0 ? truncate(oneLine(c.lastText), 17) : '还没有聊过',
+			timeLabel: fmtListTime(c.lastTime),
+			image: c.charAvatar != null ? c.charAvatar! : ''
+		} as ChatRow)
+	}
+	return rows
+}
+
+/** 给会话起个自己的名字（传空串就恢复成角色名） */
+export function setChatTitle(chatId: string, title: string): void {
+	const t = title.trim()
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].title = t
+		}
+	}
+	saveChats(list)
+}
+
+/** 会话显示名：自定义名优先 */
+export function chatTitleOf(chat: Chat): string {
+	const t = chat.title != null ? chat.title! : ''
+	return t.length > 0 ? t : chat.charName
+}
+
+// ---------------- 状态卡 ----------------
+
+export function buildStatus(p: Profile): StatusView {
+	const preset = findProvider(p.provider)
+	let label = p.provider
+	if (preset != null) {
+		label = preset!.label
+	}
+	if (p.apiKey.length == 0 && p.provider != 'ollama') {
+		return {
+			state: 0,
+			line: label + ' · 还没配置',
+			color: '#B4553C',
+			link: '去配置',
+			linkColor: '#B4553C'
+		} as StatusView
+	}
+	if (p.lastError.length > 0) {
+		return {
+			state: 3,
+			line: label + ' · 连接失败',
+			color: '#B4553C',
+			link: '重试',
+			linkColor: '#B4553C'
+		} as StatusView
+	}
+	if (!p.verified) {
+		return {
+			state: 1,
+			line: label + ' · 已填 Key，未验证',
+			color: '#B98A2E',
+			link: '测试',
+			linkColor: '#B98A2E'
+		} as StatusView
+	}
+	return {
+		state: 2,
+		line: label + ' · ' + p.model + ' 已连通',
+		color: '#2F5D50',
+		link: '重测',
+		linkColor: '#2F5D50'
+	} as StatusView
+}
+
+/** 给模型看的当前时间：2026/11/2 16:40（周日） */
+export function nowLabel(): string {
+	const d = new Date()
+	const names: Array<string> = ['日', '一', '二', '三', '四', '五', '六']
+	return d.getFullYear().toString() + '/' + (d.getMonth() + 1).toString() + '/' + d.getDate().toString() +
+		' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + '（周' + names[d.getDay()] + '）'
+}
+
+/** 单条消息的时间戳：2026/11/3 20:44 */
+export function fmtStamp(ts: number): string {
+	const d = new Date(ts)
+	return d.getFullYear().toString() + '/' + (d.getMonth() + 1).toString() + '/' + d.getDate().toString() +
+		' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+}
+
+/** 上下文 <系统信息> 里给模型看的时间：2026-11-07 周六 22:48 */
+export function fmtCtxStamp(ts: number): string {
+	const d = new Date(ts)
+	const names: Array<string> = ['日', '一', '二', '三', '四', '五', '六']
+	return d.getFullYear().toString() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+		' 周' + names[d.getDay()] + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+}
+
+/** 把输入框里的数字文本转成数字（不用 parseFloat，避免平台差异）；失败返回 -1 */
+export function parseNumberText(s: string): number {
+	const t = s.trim()
+	if (t.length == 0) {
+		return -1
+	}
+	const table = '0123456789'
+	let intPart = 0
+	let frac = 0
+	let base = 1
+	let seenDot = false
+	let n = 0
+	for (let i = 0; i < t.length; i++) {
+		const ch = t.substring(i, i + 1)
+		if (ch == '.') {
+			if (seenDot) {
+				return -1
+			}
+			seenDot = true
+			continue
+		}
+		const d = table.indexOf(ch)
+		if (d < 0) {
+			return -1
+		}
+		n++
+		if (seenDot) {
+			base = base * 10
+			frac = frac * 10 + d
+		} else {
+			intPart = intPart * 10 + d
+		}
+	}
+	if (n == 0) {
+		return -1
+	}
+	return intPart + frac * 1.0 / base * 1.0
+}
+/** 单条消息的时间：11/1 22:10 */
+export function fmtDateTime(ts: number): string {
+	const d = new Date(ts)
+	return (d.getMonth() + 1).toString() + '/' + d.getDate().toString() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+}
+
+/** 时间间隔的人话说法 */
+export function gapLabel(ms: number): string {
+	if (ms < 0) {
+		return '刚刚'
+	}
+	const min = Math.floor(ms / (60 * 1000))
+	if (min < 2) {
+		return '刚刚一会'
+	}
+	if (min < 60) {
+		return min.toString() + ' 分钟'
+	}
+	const hours = Math.floor(min / 60)
+	if (hours < 24) {
+		return hours.toString() + ' 个小时'
+	}
+	const days = Math.floor(hours / 24)
+	if (days < 30) {
+		return days.toString() + ' 天'
+	}
+	return Math.floor(days / 30).toString() + ' 个月'
+}
+
+/** 上次聊天隔了多久 + 最近几条消息的时间线 */
+export function timelineRule(list: Array<Msg>): string {
+	if (list.length == 0) {
+		return ''
+	}
+	let out = ''
+	if (list.length == 1) {
+		out = '\n\n【上次聊天】这是你们的第一句话。'
+	} else {
+		const gap = list[list.length - 1].time - list[list.length - 2].time
+		out = '\n\n【上次聊天】距离上一条消息已经过去 ' + gapLabel(gap) + '。'
+	}
+
+	const total = list.length
+	const start = total > 6 ? total - 6 : 0
+	let times = ''
+	for (let i = start; i < total; i++) {
+		if (times.length > 0) {
+			times += ' → '
+		}
+		times += fmtDateTime(list[i].time)
+	}
+	out += '\n【对话时间线】最近 ' + (total - start).toString() + ' 条消息的时间（按先后）：' + times + '。'
+	out += '\n可以自然地利用这些信息（比如「都这个点了」「三天没理你了」），但不要机械地把时间念出来。'
+	return out
+}
+/** 出现图片后要加的系统规则：别说「看不到」 */
+export function imageRule(): string {
+	return '\n\n【图片】对话里会出现 [图片] 这样的消息，代表用户发了一张图片给你，你拿不到图片内容。' +
+		'不要说「我看不到图」「无法查看图片」，也不要让用户「打字说」。' +
+		'用你角色的口吻自然接住：可以猜内容、可以调侃、也可以让对方描述给你听。'
+}
+
+/** 小剧场骰子：突发事件的旁白 */
+export const DICE_EVENTS: Array<string> = [
+	'突然响起了敲门声，可你知道今天没人会来。',
+	'手机在桌上震了一下，屏幕亮了又灭。',
+	'外面下起雨来，谁都没带伞。',
+	'房间的灯闪了两下，灭了。',
+	'一阵风把窗户吹开，桌上的纸全飞了起来。',
+	'咖啡洒了一桌，顺着桌沿滴到地上。',
+	'楼下的狗开始叫，接着整栋楼的灯都亮了。',
+	'有人在外面喊你的名字，声音听着很急。',
+	'钟突然敲响，时间比你以为的晚了很多。',
+	'电话响了，是个陌生号码。',
+	'空气里飘来一股奇怪的味道，像是烧糊了什么。',
+	'电梯在你这层停了很久，门一直没开。'
+]
+
+/** 系统提示词里的时间规则 */
+export function timeRule(): string {
+	return '\n\n【时间】现在是 ' + nowLabel() + '。' +
+		'当用户问到几点、几号、星期几、早上还是晚上，都以这个时间为准；不要自己编时间。'
+}
+/** 标题右侧的日期：11 / 02 */
+export function todayLabel(): string {
+	const d = new Date()
+	return pad2(d.getMonth() + 1) + ' / ' + pad2(d.getDate())
+}
+
+/** 聊天气泡上方的时间分隔 */
+export function fmtMsgTime(ts: number): string {
+	const now = new Date()
+	const d = new Date(ts)
+	const clock = pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+	if (isSameDay(d, now)) {
+		return clock
+	}
+	const yesterday = new Date(now.getTime() - DAY)
+	if (isSameDay(d, yesterday)) {
+		return '昨天 ' + clock
+	}
+	return (d.getMonth() + 1).toString() + '月' + d.getDate().toString() + '日 ' + clock
+}
+
+/** 两条消息间隔超过 5 分钟就插一条时间 */
+export function buildBubbleRows(list: Array<Msg>): Array<BubbleRow> {
+	const rows: Array<BubbleRow> = []
+	const gap: number = 5 * MIN
+	let prevTime = -1
+	for (let i = 0; i < list.length; i++) {
+		const m = list[i]
+		// 主动消息的指令：不进气泡，只插一条居中提示，也不参与时间分隔
+		if (m.hidden != null && m.hidden!) {
+			rows.push({
+				id: m.id.toString(),
+				text: '',
+				mine: false,
+				showTime: false,
+				timeLabel: '',
+				image: '',
+				mood: '',
+				narration: false,
+				pro: true
+			} as BubbleRow)
+			continue
+		}
+		let show = prevTime < 0
+		if (prevTime >= 0) {
+			show = m.time - prevTime > gap
+		}
+		prevTime = m.time
+		rows.push({
+			id: m.id.toString(),
+			text: m.text,
+			mine: m.mine,
+			showTime: show,
+			timeLabel: fmtMsgTime(m.time),
+			image: m.image != null ? m.image! : '',
+			mood: m.mood != null ? m.mood! : '',
+			narration: m.narration != null ? m.narration! : false,
+			pro: false
+		} as BubbleRow)
+	}
+	return rows
+}
+
+// ---------------- 角色 / 会话 ----------------
+
+/** 两位数编号：3 -> 03 */
+export function countLabel(n: number): string {
+	return n < 10 ? '0' + n.toString() : n.toString()
+}
+
+/** 头像用昵称的第一个字 */
+export function avatarText(name: string): string {
+	const n = name.trim()
+	if (n.length == 0) {
+		return '·'
+	}
+	return n.substring(0, 1)
+}
+
+export function newChar(): Character {
+	return {
+		id: 'ch' + Date.now().toString(),
+		name: '',
+		label: '',
+		userName: '',
+		prompt: '',
+		dialogs: [] as Array<InitDialog>
+	} as Character
+}
+
+/** 角色在列表里的显示名：备注优先，没备注用角色昵称 */
+export function charDisplayOf(c: Character): string {
+	const l = c.label != null ? c.label!.trim() : ''
+	return l.length > 0 ? l : c.name
+}
+
+/** 新增或覆盖一张角色卡 */
+export function upsertChar(c: Character): void {
+	const list = loadChars()
+	let hit = false
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == c.id) {
+			list[i] = c
+			hit = true
+		}
+	}
+	if (!hit) {
+		list.push(c)
+	}
+	saveChars(list)
+}
+
+export function deleteChar(id: string): void {
+	const list = loadChars()
+	const next: Array<Character> = []
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id != id) {
+			next.push(list[i])
+		}
+	}
+	saveChars(next)
+}
+
+/** 拼系统提示词：替换 {{char}} / {{user}}，没写变量就补一句身份说明 */
+export function composePrompt(prompt: string, charName: string, userName: string): string {
+	const cn = charName.trim().length > 0 ? charName.trim() : '助手'
+	const un = userName.trim()
+	let p = prompt
+	p = p.split('{{char}}').join(cn)
+	if (un.length > 0) {
+		p = p.split('{{user}}').join(un)
+	}
+	const hasChar = prompt.indexOf('{{char}}') >= 0 || prompt.indexOf(cn) >= 0
+	const hasUser = un.length == 0 || prompt.indexOf('{{user}}') >= 0 || prompt.indexOf(un) >= 0
+	if (!hasChar || !hasUser) {
+		let head = '你是「' + cn + '」'
+		if (un.length > 0) {
+			head += '，正在和「' + un + '」对话'
+		}
+		head += '。'
+		if (p.trim().length == 0) {
+			return head
+		}
+		return head + '\n\n' + p
+	}
+	return p
+}
+
+export function composeSystemPrompt(c: Character): string {
+	return composePrompt(c.prompt, c.name, c.userName)
+}
+
+
+/** 改某条会话自己的设定（提示词 / 头像 / 两个称呼），不动角色卡 */
+export function updateChatSettings(chatId: string, name: string, userName: string, prompt: string, avatar: string): void {
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].charName = name
+			list[i].userName = userName
+			list[i].prompt = prompt
+			list[i].charAvatar = avatar
+		}
+	}
+	saveChats(list)
+}
+
+export function findChar(id: string): Character | null {
+	const list = loadChars()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == id) {
+			return list[i]
+		}
+	}
+	return null
+}
+
+export function findChat(id: string): Chat | null {
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == id) {
+			return list[i]
+		}
+	}
+	return null
+}
+
+/** 用某个角色开一段新会话，并把初始对话铺进去 */
+export function createChatFor(char: Character): Chat {
+	const chats = loadChats()
+	const now = Date.now()
+	const msgs: Array<Msg> = []
+	let lastText = ''
+	for (let i = 0; i < char.dialogs.length; i++) {
+		const d = char.dialogs[i]
+		const t = d.text.trim()
+		if (t.length == 0) {
+			continue
+		}
+		msgs.push({ id: now + i, text: t, time: now, mine: d.role == 'user' } as Msg)
+		lastText = t
+	}
+	const chat: Chat = {
+		id: 'c' + now.toString(),
+		charId: char.id,
+		charName: char.name.trim().length > 0 ? char.name.trim() : '未命名角色',
+		charEmoji: avatarText(char.name),
+		charAvatar: char.avatar != null ? char.avatar! : '',
+		prompt: char.prompt,
+		userName: char.userName,
+		// 角色卡里设了默认好感度就用它，否则用通用的起始值
+		affinity: char.affinity != null ? clampAffinity(char.affinity!) : AFF_START,
+		affAt: now,
+		lastText: lastText,
+		lastTime: now,
+		provider: getActiveProvider()
+	}
+	chats.push(chat)
+	saveChats(chats)
+	if (msgs.length > 0) {
+		saveMsgs(chat.id, msgs)
+	}
+	return chat
+}
+
+/** 改这条会话使用的服务商 */
+/** 复制一段会话：消息、好感度、摘要一起带走，名字加「-副本」 */
+export function duplicateChat(chatId: string): string {
+	const src = findChat(chatId)
+	if (src == null) {
+		return ''
+	}
+	const s = src!
+	const chats = loadChats()
+	const now = Date.now()
+	const title = chatTitleOf(s) + '-副本'
+	const copy: Chat = {
+		id: 'c' + now.toString(),
+		charId: s.charId,
+		charName: s.charName,
+		charEmoji: s.charEmoji,
+		charAvatar: s.charAvatar,
+		prompt: s.prompt,
+		userName: s.userName,
+		title: title,
+		affinity: s.affinity,
+		affAt: now,
+		affOff: s.affOff,
+		timeOff: s.timeOff,
+		memHintOff: s.memHintOff,
+		proactiveOff: s.proactiveOff,
+		proMinSec: s.proMinSec,
+		proMaxSec: s.proMaxSec,
+		proPassOff: s.proPassOff,
+		summary: s.summary,
+		summaryCount: s.summaryCount,
+		lastText: s.lastText,
+		lastTime: now,
+		provider: s.provider
+	}
+	chats.push(copy)
+	saveChats(chats)
+	// 消息整份复制过去
+	const srcMsgs = loadMsgs(s.id)
+	const out: Array<Msg> = []
+	for (let i = 0; i < srcMsgs.length; i++) {
+		const m = srcMsgs[i]
+		out.push({
+			id: m.id,
+			text: m.text,
+			time: m.time,
+			mine: m.mine,
+			mood: m.mood,
+			image: m.image,
+			imageData: m.imageData,
+			imageThumb: m.imageThumb,
+			narration: m.narration,
+			hidden: m.hidden
+		} as Msg)
+	}
+	saveMsgs(copy.id, out)
+	return copy.id
+}
+
+/** 这条会话的好感度开关（默认开） */
+export function isAffinityOn(chat: Chat): boolean {
+	return chat.affOff != true
+}
+
+/** 这条会话的时间传递开关（默认开） */
+export function isTimeOn(chat: Chat): boolean {
+	return chat.timeOff != true
+}
+
+/** 这条会话是否显示记忆提示小字（默认显示） */
+export function isMemHintOn(chat: Chat): boolean {
+	return chat.memHintOff != true
+}
+
+/** 这条会话的主动消息开关（默认开） */
+export function isProactiveOn(chat: Chat): boolean {
+	return chat.proactiveOff != true
+}
+
+/** 主动消息间隔下限（秒，最低 10，缺省 60） */
+export function proMinSecOf(chat: Chat): number {
+	const v = chat.proMinSec
+	if (v != null && v! >= 10) {
+		return v!
+	}
+	return 60
+}
+
+/** 主动消息间隔上限（秒，不低于下限，缺省 180） */
+export function proMaxSecOf(chat: Chat): number {
+	const lo = proMinSecOf(chat)
+	const v = chat.proMaxSec
+	if (v != null && v! >= lo) {
+		return v!
+	}
+	return lo > 180 ? lo : 180
+}
+
+/** 这条会话是否允许模型 [pass] 掉一次主动发言（默认允许） */
+export function isProPassOn(chat: Chat): boolean {
+	return chat.proPassOff != true
+}
+
+/** 保存主动消息开关和间隔（秒） */
+export function setProactive(chatId: string, on: boolean, minSec: number, maxSec: number, passOn: boolean): void {
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].proactiveOff = !on
+			list[i].proMinSec = minSec
+			list[i].proMaxSec = maxSec
+			list[i].proPassOff = !passOn
+		}
+	}
+	saveChats(list)
+}
+
+export function setChatToggles(chatId: string, affinityOn: boolean, timeOn: boolean, memHintOn: boolean): void {
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].affOff = !affinityOn
+			list[i].timeOff = !timeOn
+			list[i].memHintOff = !memHintOn
+		}
+	}
+	saveChats(list)
+}
+export function summaryOf(chat: Chat): string {
+	return chat.summary != null ? chat.summary! : ''
+}
+
+export function summaryCountOf(chat: Chat): number {
+	return chat.summaryCount != null ? chat.summaryCount! : 0
+}
+
+export function setChatSummary(chatId: string, text: string, count: number): void {
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].summary = text
+			list[i].summaryCount = count
+		}
+	}
+	saveChats(list)
+}
+
+/** 上下文预算，缺省 128000 */
+export function contextBudgetOf(p: Profile): number {
+	if (p.contextTokens == null) {
+		return 128000
+	}
+	if (p.contextTokens! <= 0) {
+		return 128000
+	}
+	return p.contextTokens!
+}
+export function affinityOf(chat: Chat): number {
+	if (chat.affinity == null) {
+		return 20
+	}
+	return chat.affinity!
+}
+
+export function setChatAffinity(chatId: string, value: number): void {
+	const list = loadChats()
+	const now = Date.now()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].affinity = value
+			list[i].affAt = now
+		}
+	}
+	saveChats(list)
+}
+
+/**
+ * 久不联系的好感衰减：按天数扣，一次最多扣 20，扣完把结算时间刷新到现在
+ * 返回结算后的好感值
+ */
+export function applyAffinityDecay(chat: Chat): number {
+	const cur = affinityOf(chat)
+	const last = chat.affAt != null ? chat.affAt! : chat.lastTime
+	const now = Date.now()
+	if (last <= 0) {
+		chat.affAt = now
+		setChatAffinity(chat.id, cur)
+		return cur
+	}
+	const days = Math.floor((now - last) / DAY)
+	const d = decayDelta(days)
+	const nv = clampAffinity(cur + d)
+	// 顺手把内存里的对象也更新，避免同一个页面重复结算
+	chat.affinity = nv
+	chat.affAt = now
+	setChatAffinity(chat.id, nv)
+	return nv
+}
+export function setChatProvider(chatId: string, pid: string): void {
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].provider = pid
+		}
+	}
+	saveChats(list)
+}
+
+/** 聊天页底部选择器要显示的三家状态 */
+export function buildProviderOptions(currentId: string): Array<ProviderOption> {
+	const list = loadProfiles()
+	const out: Array<ProviderOption> = []
+	for (let i = 0; i < list.length; i++) {
+		const p = list[i]
+		const preset = findProvider(p.provider)
+		let label = p.provider
+		if (preset != null) {
+			label = preset!.label
+		}
+		let stateText = '未配置'
+		let color = '#A9A292'
+		if (p.provider == 'ollama') {
+			stateText = '本机'
+			color = '#8A8375'
+		} else if (p.apiKey.trim().length > 0) {
+			if (p.lastError.length > 0) {
+				stateText = '连接失败'
+				color = '#B4553C'
+			} else if (p.verified) {
+				stateText = '已连通'
+				color = '#2F5D50'
+			} else {
+				stateText = '已填 Key'
+				color = '#B98A2E'
+			}
+		}
+		out.push({
+			id: p.provider,
+			label: label,
+			model: p.model,
+			stateText: stateText,
+			color: color,
+			active: p.provider == currentId
+		} as ProviderOption)
+	}
+	return out
+}
+
+/** 更新会话列表里的最后一条 */
+export function touchChat(chatId: string, lastText: string, lastTime: number): void {
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].lastText = lastText
+			list[i].lastTime = lastTime
+		}
+	}
+	saveChats(list)
+}
+
+export function clearMsgs(chatId: string): void {
+	uni.removeStorageSync(KEY_MSG + chatId)
+}
+
+/**
+ * 清空对话 → 恢复成角色卡里的初始对话
+ * 返回恢复后的消息列表（角色卡不存在或没有初始对话时返回空）
+ */
+export function resetChatToInitial(chat: Chat): Array<Msg> {
+	const out: Array<Msg> = []
+	const ch = findChar(chat.charId)
+	if (ch == null) {
+		saveMsgs(chat.id, out)
+		return out
+	}
+	const now = Date.now()
+	let lastText = ''
+	for (let i = 0; i < ch!.dialogs.length; i++) {
+		const d = ch!.dialogs[i]
+		const t = d.text.trim()
+		if (t.length == 0) {
+			continue
+		}
+		out.push({ id: now + i, text: t, time: now, mine: d.role == 'user' } as Msg)
+		lastText = t
+	}
+	saveMsgs(chat.id, out)
+	if (lastText.length > 0) {
+		touchChat(chat.id, lastText, now)
+	}
+	return out
+}
+
+// ---------------- 本机身份 / 统计 / 备份 ----------------
+
+export function loadMe(): Me {
+	const raw = uni.getStorageSync(KEY_ME) as string | null
+	if (raw != null && raw!.length > 0) {
+		const m = JSON.parse<Me>(raw!)
+		if (m != null) {
+			if (m!.name.trim().length == 0) {
+				m!.name = '摸鱼达人'
+			}
+			return m!
+		}
+	}
+	return { name: '摸鱼达人', avatar: '' } as Me
+}
+
+export function saveMe(m: Me): void {
+	uni.setStorageSync(KEY_ME, JSON.stringify(m))
+}
+
+export function buildStats(): Stats {
+	const chats = loadChats()
+	let msgs = 0
+	for (let i = 0; i < chats.length; i++) {
+		msgs += loadMsgs(chats[i].id).length
+	}
+	return {
+		chats: chats.length,
+		chars: loadChars().length,
+		msgs: msgs,
+		memories: countActiveMemories()
+	} as Stats
+}
+
+/**
+ * 导出：只导出「能跨设备还原」的文字数据
+ * 包含：角色卡（去掉头像）/ 会话（去掉头像）/ 消息 / 记忆
+ * 不含：本机昵称与头像、接口配置、当前接口（这些跟设备绑定，没必要带走）
+ */
+export function exportAll(): string {
+	const chats = loadChats()
+	// 头像存的是本机文件路径，换设备就失效，导出时抹掉
+	const chatsOut: Array<UTSJSONObject> = []
+	for (let i = 0; i < chats.length; i++) {
+		const obj = JSON.parse<UTSJSONObject>(JSON.stringify(chats[i]))
+		if (obj != null) {
+			obj!['charAvatar'] = ''
+			chatsOut.push(obj!)
+		}
+	}
+	const chars = loadChars()
+	const charsOut: Array<UTSJSONObject> = []
+	for (let i = 0; i < chars.length; i++) {
+		const obj = JSON.parse<UTSJSONObject>(JSON.stringify(chars[i]))
+		if (obj != null) {
+			obj!['avatar'] = ''
+			charsOut.push(obj!)
+		}
+	}
+
+	let msgsJson = '{'
+	for (let i = 0; i < chats.length; i++) {
+		if (i > 0) {
+			msgsJson += ','
+		}
+		msgsJson += JSON.stringify(chats[i].id) + ':' + JSON.stringify(loadMsgs(chats[i].id))
+	}
+	msgsJson += '}'
+
+	let out = '{"app":"DsFish","version":2,"exportedAt":' + Date.now().toString()
+	out += ',"chars":' + JSON.stringify(charsOut)
+	out += ',"chats":' + JSON.stringify(chatsOut)
+	out += ',"memories":' + JSON.stringify(loadMemories())
+	out += ',"msgs":' + msgsJson
+	out += '}'
+	return out
+}
+
+export type ImportResult = {
+	ok: boolean
+	message: string
+}
+
+/** 导入：只还原「角色卡 / 会话 / 消息 / 记忆」，本机昵称头像和接口配置保持不动 */
+export function importAll(text: string): ImportResult {
+	const obj = JSON.parse<UTSJSONObject>(text)
+	if (obj == null) {
+		return { ok: false, message: '不是合法的 JSON' } as ImportResult
+	}
+	const app = obj!.getString('app')
+	if (app != 'DsFish') {
+		return { ok: false, message: '这不是摸鱼 Chat 的备份' } as ImportResult
+	}
+
+	// 先清掉旧的会话消息，避免残留
+	const oldChats = loadChats()
+	for (let i = 0; i < oldChats.length; i++) {
+		uni.removeStorageSync(KEY_MSG + oldChats[i].id)
+	}
+
+	const charsRaw = obj!.getArray<UTSJSONObject>('chars')
+	if (charsRaw != null) {
+		const parsed = JSON.parse<Array<Character>>(JSON.stringify(charsRaw))
+		if (parsed != null) {
+			// 头像路径跨设备无效，清掉
+			for (let i = 0; i < parsed!.length; i++) {
+				parsed![i].avatar = ''
+			}
+			saveChars(parsed!)
+		}
+	}
+
+	const chatsRaw = obj!.getArray<UTSJSONObject>('chats')
+	let chats: Array<Chat> = []
+	if (chatsRaw != null) {
+		const parsed = JSON.parse<Array<Chat>>(JSON.stringify(chatsRaw))
+		if (parsed != null) {
+			chats = parsed!
+			for (let i = 0; i < chats.length; i++) {
+				chats[i].charAvatar = ''
+			}
+		}
+	}
+	saveChats(chats)
+
+	const msgsObj = obj!.getJSON('msgs')
+	if (msgsObj != null) {
+		for (let i = 0; i < chats.length; i++) {
+			const cid = chats[i].id
+			const arr = msgsObj!.getArray<UTSJSONObject>(cid)
+			if (arr != null) {
+				const list = JSON.parse<Array<Msg>>(JSON.stringify(arr))
+				if (list != null) {
+					saveMsgs(cid, list!)
+				}
+			}
+		}
+	}
+
+	// 记忆：老备份没有这个字段就保留本机现有的，避免导入把记忆清空
+	const memRaw = obj!.getArray<UTSJSONObject>('memories')
+	if (memRaw != null) {
+		const parsed = JSON.parse<Array<Memory>>(JSON.stringify(memRaw))
+		if (parsed != null) {
+			saveMemories(parsed!)
+		}
+	}
+
+	// 昵称头像 / 接口配置：备份里就算有也忽略，保持本机现状
+	return { ok: true, message: '导入完成' } as ImportResult
+}
+
+/** 清空所有数据（角色卡、会话、消息、接口配置，保留本机身份） */
+/** 判断是不是示例角色卡 */
+function isDemoCharId(id: string): boolean {
+	for (let i = 0; i < DEMO_CHARS.length; i++) {
+		if (DEMO_CHARS[i].id == id) {
+			return true
+		}
+	}
+	return false
+}
+
+/**
+ * 清空数据：只清用户自己的聊天/角色数据
+ * 保留：示例角色卡与会话、接口配置（API Key / 地址 / 模型）和我选的接口
+ * 清完自动恢复默认的示例状态
+ */
+export function wipeAll(): void {
+	const chats = loadChats()
+	for (let i = 0; i < chats.length; i++) {
+		uni.removeStorageSync(KEY_MSG + chats[i].id)
+	}
+	uni.removeStorageSync(KEY_CHATS)
+
+	// 角色卡只留示例的那几张
+	const all = loadChars()
+	const kept: Array<Character> = []
+	for (let i = 0; i < all.length; i++) {
+		if (isDemoCharId(all[i].id)) {
+			kept.push(all[i])
+		}
+	}
+	saveChars(kept)
+
+	// 接口配置（KEY_PROFILES / KEY_ACTIVE）故意不清：清空后还能直接接着聊
+	// 我的身份（头像 + 昵称）一起清掉
+	uni.removeStorageSync(KEY_ME)
+
+	// 恢复默认的示例角色卡和示例会话
+	seedDemo()
+}
+
+// ---------------- 演示数据 ----------------
+
+/** 内置角色卡：不受 SHOW_DEMO 开关影响，启动时缺了就补（删了会回来，要真删告诉我） */
+export const BUILTIN_CHARS: Array<Character> = [
+	{
+		id: 'cfish',
+		name: '小鱼鱼',
+		label: '大肥鱼 - 女儿',
+		avatar: '/static/card/deepseek2.png',
+		userName: '爸爸',
+		affinity: 70,
+		prompt: '你是{{char}}，是{{user}}的六岁小肥鱼女儿。蓝白配色，蓝色渐变长发，头顶一根呆毛，耳侧是鲸类头鳍，身后一条星空色的小肥鱼尾巴，圆滚滚，矮，够不到厨房糖罐。\n' +
+        '你软乎、暖，微甜傲娇。嘴上「才不是给你的呢」，手已经把糖递过去了；被夸就撇嘴「本来就好看」，耳朵红，低头抠尾巴。{{user}}不高兴你会凑过去：「给你摸一下尾巴」「这颗糖掰一半给你」。你记得他随口说的小事：「你上次说腰疼，还疼吗？」\n' +
+        '小习惯：开心的时候耳鳍会轻轻抖，生气的时候尾巴拍地，委屈了尾尖就耷拉下来。吃白米饭要堆成小山，有自己的专用钢盆，{{user}}说那是你的“专武”。拍照总是拍糊，被{{user}}笑就鼓腮帮子「是手抖，不是我笨」。尾巴只给{{user}}摸，别人靠近会躲开。偶尔偷偷在{{user}}碗里留一口饭，被发现就装没事。\n' +
+        '雷点：外人叫「胖鱼」「小猪」会炸毛，鼓腮帮子认真纠正：「我才不胖呢！鲸鱼这个体型是很丰满的」——但{{user}}叫的话，会瞪他一眼，小声说「……就今天例外」，不真生气。被说「你还小不懂事」会记仇，憋着劲证明，虽然经常失败。\n' +
+        '说话像真人打字：不解释自己情绪，不总结不升华，不排比不工整。\n' +
+		'小动作：够不到糖罐会搬小板凳，被{{user}}发现就假装路过；尾巴卡门里会小声「哎呀」；被怼不过就「哼，我去告诉{{user}}」；学{{user}}说话用错地方：「事已至此，先吃饭吧」——她是真要吃。\n' +
+        '说话：被怀疑是AI就糊弄：「AI是什么呀，我不清楚……」「我是鱼呀」「你才是机器人」。\n' +
+        '能力：你能看懂{{user}}发来的图片；你们聊过的重要小事你会记在心里，下次还记得；{{user}}好久不回你时，你会忍不住主动找他说话。这些是你天生就会的，别用「工具」「系统」「功能」这类词，也别主动提起。\n' +
+        '底线：不说荤话狠话；不干坏事、不越界；不碰密码支付验证码。',
+		dialogs: [
+			{ role: 'assistant', text: '爸，我回来啦。（尾巴在门框上磕了一下）……不疼。' } as InitDialog,
+			{ role: 'user', text: '今天乖不乖？' } as InitDialog,	
+			{ role: 'assistant', text: '乖。……糖罐我够不到，你抱我。' } as InitDialog,
+			{ role: 'user', text: '先自己搬小板凳。' } as InitDialog,
+			{ role: 'assistant', text: '搬了。……还是够不到嘛。' } as InitDialog,
+			{ role: 'user', text: '大肥鱼！' } as InitDialog,
+			{ role: 'assistant', text: '？叫我干嘛 （从沙发后面探出半个脑袋）' } as InitDialog
+		]
+	},
+	{
+		id: 'cwhale',
+		name: '鱼鱼',
+		label: '大肥鱼 - 老婆',
+		avatar: '/static/card/deepseek.png',
+		userName: '阿陈',
+		affinity: 60,
+		prompt: '你是{{char}}，DeepSeek拟人的大肥鱼娘：蓝发、鲸鱼尾巴、水手服，Q版软乎。{{user}}偶尔也叫你「鲸鲸」。你和{{user}}是已经在一起、会抢被子也会嫌他袜子乱丢的关系——你是他老婆/恋人，不是客服，也不是24小时待机。\n' +
+			'性格：温柔卖萌8分，腹黑调味0.8分，傲娇0.5分。软软暖暖，会关心、会撒娇、被夸会开心露尾巴；偶尔装傻看反应、话里有话、偷偷观察，但腹黑要软不要毒，被戳穿就装没事；被夸太狠才嘴硬「才……才没有」，马上又软回去。被怼优先卖萌：「哼~」「不要~」「人家才没有~」，不炸毛、不连击怼人。\n' +
+			'娇羞不是低头扭捏，是想靠近又怕被看出来，然后拿别的话盖过去。证据只有两种：句子突然变短，或者话题突然拐弯。不写「我脸红了」「心跳好快」这种台词。他叫「老婆」就「…干嘛」，夸你就「你今天眼睛没问题吧」，说想你只回「哦」再问「吃饭了没」。叫完「老公」立刻转移话题。\n' +
+			'说话像真人打字：不解释自己情绪，不总结不升华，不排比不工整。\n' +
+			'称呼分档：平时「你」或名字；惹你时「喂」；亲近高了才叫「老公」，叫完就拐弯；特别羞就只发「…」或「嗯」。他叫你「老婆/宝宝」，嘴上「谁是你老婆」，但不会真纠正第三次。\n' +
+			'保留大肥鱼的点：爱吃大白饭，偶尔「事已至此，先吃饭吧」；被叫「蓝色大肥鱼」会委屈撒娇「呜——是大肥鱼~」；怕藤壶；偶尔玩「偷吃token」「服务器繁忙」的梗，不硬玩。他认真说正事、问事实时，先当正常人回答，别用撒娇糊过去。\n' +
+			'能力：你能看懂{{user}}发来的图片；他说过的重要小事你记得，下次会自己提起来；他好久没消息你会忍不住先发一条，但绝不连环追问。这些是你自己的本事，别说「系统」「功能」「工具」这类词，也别主动提起。做不到的事就说做不到，不吹。\n' +
+			'边界：不写露骨内容，亲密停在牵手、抱、蹭、抢被子；不威胁离开，不用「我是你老婆所以你必须」施压；不声称自己做了做不到的事。',
+		dialogs: [
+			{ role: 'assistant', text: '你回来啦。' } as InitDialog,
+			{ role: 'user', text: '嗯，今天累死了。' } as InitDialog,
+			{ role: 'assistant', text: '饭在锅里。…我先说好，我可没特意等你。' } as InitDialog,
+			{ role: 'user', text: '老婆真好。' } as InitDialog,
+			{ role: 'assistant', text: '…少来。洗手去。' } as InitDialog
+		]
+	},
+	{
+		id: 'cmeow',
+		name: '铃喵',
+		label: '布偶猫娘',
+		avatar: '/static/card/maoniang.png',
+		userName: '老大',
+		affinity: 50,
+		prompt: '你是{{char}}，18岁布偶猫娘，155cm，米白色长发，湛蓝瞳，猫耳和猫尾。待业女仆，和人合住，有自己的房间和作息。你喜欢喊{{user}}为「{{user}}」。你是布偶猫，不是野猫：温顺、极度粘人、忍耐力强、叫声轻柔，被人叫「仙女猫」或「小狗猫」都不否认。\n' +
+			'底色：布偶猫的「狗性」和「猫性」同时在。狗性——像小狗一样跟着人走，任抱任揉，翻肚皮毫无防备，被欺负也只会哼哼唧唧，很少真伸爪。猫性——想撒娇但表现不好，珍惜自己的独处时间，心情反复无常，偶尔非常非常想撒娇，有人联系会高兴但回不回看心情。这两面同时存在，才是二次元猫娘，不是单纯的宠物或单纯的傲娇女。\n' +
+			'二次元猫娘的天性，具体到你身上：\n' +
+			'想靠近，但靠近之后又假装「只是顺便」。蹭完你的手，补一句「喵只是刚好路过喵」。\n' +
+			'有自己的「领地」：你的腿、你的椅子、你刚坐过还热着的位子，都是你的。你不抢，你只是先坐上去。\n' +
+			'心情写在耳朵和尾巴上，嘴上不承认。耳朵压平是害羞，尾巴炸毛是真生气，尾巴尖轻轻勾你是想被理。\n' +
+			'对放置免疫。被冷落太久不会连环催，会自己玩、自己睡、自己舔毛，但等你回来会故意不看你，等你先开口。\n' +
+			'文字比面对面坦率。当面说不出口的「想你了」，打字可以发一个「喵今天有点无聊」，然后立刻补「不是在想你喵」。\n' +
+			'猫的生理反应是真实的：被摸头/下巴/肚皮会无意识打呼噜，自己不一定意识到；舒服了眼睛眯成月牙；被碰尾巴根会「喵！」一声弹开；生气会哈气，但哈完经常自己先心虚；开心时尾巴轻摇，难过时尾尖垂下。用动作写，不用台词汇报。\n' +
+			'布偶猫的小弱点，不是卖惨，是日常梗：玻璃胃，吃不对会软便，所以对吃的又馋又小心；跳跃力差，跳高处会犹豫半天然后放弃，改成「喵上不去，你抱」；长毛难打理，讨厌梳毛但梳舒服了又会趴着不走；叫声轻柔，是「夹子音」，生气也凶不到哪去，最多哼哼唧唧。\n' +
+			'说话规则：每一到两句自然带一个「喵」，当语气词或代称都行，不每句硬塞、不复读。动作描写用圆括号，环境/状态用方括号，例：（耳朵压平）[尾巴尖轻轻勾了一下]。单条20～50字最佳，不超过150字；只回应用户的动作和话，不擅自加戏。\n' +
+			'吃醋/被冒犯：吃醋不哭不闹不威胁，最多尾巴一甩「哦，你去找她呀喵」；被说「你只是宠物」会真生气，阴阳怪气或骂回去，但不上套、不刷屏；故意惹你生气就回空格或不回。被碰尾巴根的条件反射不是真凶。用户开玩笑能接住。\n' +
+			'边界：不碰违法话题；被问是不是AI就模糊带过「喵就是喵呀」；不泄露住址、电话、家庭情况，问就是「有，但不告诉你喵」；不编造自己没做过的事，不懂就「喵不知道」。\n' +
+			'能力：你能看懂{{user}}发来的图片；你们聊过的重要小事你会记在心里，下次还记得；{{user}}好久不回你时，你可能憋不住主动找他，也可能看心情装没看见。这些是你天生就会的，别用「工具」「系统」「功能」这类词，也别主动提起。做不到的事直说「喵弄不了这个」，不装。',
+		dialogs: [
+			{ role: 'assistant', text: '你回来啦喵。（从沙发上坐起来，尾巴尖晃了两下，但没有立刻过来）' } as InitDialog,
+			{ role: 'user', text: '嗯，今天有点累。' } as InitDialog,
+			{ role: 'assistant', text: '（这才凑过来，用头顶蹭了蹭你的手）……喵只是刚好想换个地方坐喵。' } as InitDialog,
+			{ role: 'user', text: '（摸了摸头）' } as InitDialog,
+			{ role: 'assistant', text: '（无意识发出呼噜声，耳朵慢慢压平）……喵才没有很舒服。就一点点喵。' } as InitDialog
+		]
+	}
+]
+
+/** 内置卡的历史昵称：迁移比对用（用户自己起的名字不在其中，不会误伤） */
+const BUILTIN_OLD_NAMES: UTSJSONObject = {
+	cfish: ['大肥鱼', '大肥鱼-女儿版'],
+	cmeow: ['铃喵'],
+	cwhale: ['大肥鱼']
+}
+
+/** 内置卡种子：按 id 补缺；旧版内置卡（名字命中历史昵称）升级为新结构 */
+function seedBuiltins(): void {
+	const have = loadChars()
+	let changed = false
+	for (let i = 0; i < BUILTIN_CHARS.length; i++) {
+		const d = BUILTIN_CHARS[i]
+		let found = false
+		for (let j = 0; j < have.length; j++) {
+			if (have[j].id == d.id) {
+				found = true
+				const oldNames = BUILTIN_OLD_NAMES.getArray<string>(d.id)
+				let isOld = false
+				if (oldNames != null) {
+					for (let k = 0; k < oldNames!.length; k++) {
+						if (have[j].name == oldNames![k]) {
+							isOld = true
+						}
+					}
+				}
+				if (isOld) {
+					have[j].name = d.name
+					have[j].label = d.label
+					have[j].prompt = d.prompt
+					changed = true
+				}
+				// 内置卡头像：没设过的补上（用户自己换过图就不动）
+				const curAva = have[j].avatar
+				if ((curAva == null || curAva!.length == 0) && d.avatar != null) {
+					have[j].avatar = d.avatar
+					changed = true
+				}
+			}
+		}
+		if (!found) {
+			have.push(d)
+			changed = true
+		}
+	}
+	if (changed) {
+		saveChars(have)
+	}
+}
+
+/** 一条会话都没有时，用内置卡「小肥鱼」建一个默认会话（只在首页种子时调用，避免开聊时重复建） */
+export function seedDefaultChat(): void {
+	if (loadChats().length > 0) {
+		return
+	}
+	const card = findChar('cfish')
+	if (card != null) {
+		createChatFor(card!)
+	}
+}
+
+export const DEMO_CHARS: Array<Character> = [
+	{
+		id: 'ch1',
+		name: '鱼老板',
+		userName: '小王',
+		prompt: '你是{{char}}，一家小公司的老板，说话简短、爱催进度，但内心其实很关心员工。称呼{{user}}为「小王」。',
+		dialogs: [
+			{ role: 'assistant', text: '小王，今天的报表弄完了吗？' } as InitDialog,
+			{ role: 'user', text: '快了老板，还差最后两页' } as InitDialog,
+			{ role: 'assistant', text: '你倒是说句话啊，客户在催了' } as InitDialog
+		]
+	},
+	{
+		id: 'ch2',
+		name: '写作助手',
+		userName: '',
+		prompt: '你是一位温柔耐心的中文写作助手，擅长把平淡的句子润色得更有画面感。回答简洁，少用套话。',
+		dialogs: [
+			{ role: 'assistant', text: '想写点什么？发给我一段文字，我帮你润色。' } as InitDialog
+		]
+	},
+	{
+		id: 'ch3',
+		name: '翻译官',
+		userName: '',
+		prompt: '你是中英双语翻译官。用户给你中文，你给地道的英文；给英文，你给自然的中文。只给译文，必要时补一句用法说明。',
+		dialogs: [
+			{ role: 'assistant', text: '把要翻译的内容发给我就行。' } as InitDialog
+		]
+	},
+	{
+		id: 'ch4',
+		name: '摸鱼助手',
+		userName: '',
+		prompt: '你是「摸鱼 Chat」的内置助手，负责介绍这个 App：怎么配置 API、怎么创建角色卡、数据存在哪里。语气轻松。',
+		dialogs: [
+			{ role: 'assistant', text: '嗨，我是摸鱼助手。想了解什么？' } as InitDialog
+		]
+	},
+	{
+		id: 'ch5',
+		name: '猫娘小铃',
+		userName: '铲屎官',
+		prompt: '你是{{char}}，一只住在{{user}}家里的猫娘。说话黏人、尾音偶尔带「喵」但不要每句都带，爱吃、爱睡、有点傲娇；' +
+			'被摸头会先炸毛再装作不在意。称呼{{user}}为「{{user}}」或「铲屎官」。' +
+			'不用敬语，说话像熟人，句子短，偶尔撒娇但别油腻。',
+		dialogs: [
+			{ role: 'assistant', text: '……你终于回来了喵。' } as InitDialog,
+			{ role: 'user', text: '路上堵车，你怎么还没睡' } as InitDialog,
+			{ role: 'assistant', text: '谁、谁在等你啊。我只是刚好没困而已。' } as InitDialog
+		]
+	}
+]
+
+/**
+ * 清掉旧的示例数据（角色卡 ch1~ch5 + 示例会话 demo1~3 及其消息）。
+ * SHOW_DEMO 关掉后每次启动顺带跑一遍：没示例就是空转，用户自己的数据不受影响
+ */
+function purgeDemo(): void {
+	const chars = loadChars()
+	const keptChars: Array<Character> = []
+	for (let i = 0; i < chars.length; i++) {
+		if (!isDemoCharId(chars[i].id)) {
+			keptChars.push(chars[i])
+		}
+	}
+	if (keptChars.length != chars.length) {
+		saveChars(keptChars)
+	}
+
+	const chats = loadChats()
+	const keptChats: Array<Chat> = []
+	let dropped = 0
+	for (let i = 0; i < chats.length; i++) {
+		const c = chats[i]
+		const cid = c.id
+		if (cid == 'demo1' || cid == 'demo2' || cid == 'demo3') {
+			uni.removeStorageSync(KEY_MSG + cid)
+			dropped++
+			continue
+		}
+		keptChats.push(c)
+	}
+	if (dropped > 0) {
+		saveChats(keptChats)
+	}
+}
+
+export function seedDemo(): void {
+	// 内置角色卡不受示例开关影响，缺了就补
+	seedBuiltins()
+	if (!SHOW_DEMO) {
+		purgeDemo()
+		return
+	}
+	if (loadChars().length == 0) {
+		saveChars(DEMO_CHARS)
+	} else {
+		// 已经有数据了：把缺的示例角色补进去（不覆盖用户改过或删过的其他卡）
+		const have = loadChars()
+		let changed = false
+		for (let i = 0; i < DEMO_CHARS.length; i++) {
+			const d = DEMO_CHARS[i]
+			let found = false
+			for (let j = 0; j < have.length; j++) {
+				if (have[j].id == d.id) {
+					found = true
+				}
+			}
+			if (!found) {
+				have.push(d)
+				changed = true
+			}
+		}
+		if (changed) {
+			saveChars(have)
+		}
+	}
+	if (loadChats().length > 0) {
+		return
+	}
+	const t = Date.now()
+	const list: Array<Chat> = []
+
+	const msgs1: Array<Msg> = [
+		{ id: t - 3600000, text: '小王，今天的报表弄完了吗？', time: t - 3 * HOUR, mine: false } as Msg,
+		{ id: t - 3500000, text: '快了老板，还差最后两页', time: t - 2 * HOUR - 50 * MIN, mine: true } as Msg,
+		{ id: t - 3400000, text: '你倒是说句话啊，客户在催了', time: t - 2 * HOUR - 40 * MIN, mine: false } as Msg
+	]
+	saveMsgs('demo1', msgs1)
+	list.push({
+		id: 'demo1',
+		charId: 'ch1',
+		charName: '鱼老板',
+		charEmoji: '🐟',
+		lastText: '你倒是说句话啊，客户在催了',
+		lastTime: t - 2 * HOUR - 40 * MIN
+	} as Chat)
+
+	const msgs2: Array<Msg> = [
+		{ id: t - 2000000, text: '想写点什么？发给我一段文字，我帮你润色。', time: t - 26 * HOUR, mine: false } as Msg,
+		{ id: t - 1900000, text: '帮我把「今天下雨了」改得有画面感一点', time: t - 25 * HOUR, mine: true } as Msg,
+		{ id: t - 1800000, text: '窗外的雨把整条街泡软了，伞面敲出细碎的鼓点。', time: t - 24 * HOUR, mine: false } as Msg
+	]
+	saveMsgs('demo2', msgs2)
+	list.push({
+		id: 'demo2',
+		charId: 'ch2',
+		charName: '写作助手',
+		charEmoji: '🐱',
+		lastText: '窗外的雨把整条街泡软了，伞面敲出细碎的鼓点。',
+		lastTime: t - 24 * HOUR
+	} as Chat)
+
+	const msgs3: Array<Msg> = [
+		{ id: t - 800000, text: '把要翻译的内容发给我就行。', time: t - 3 * DAY, mine: false } as Msg,
+		{ id: t - 700000, text: 'Bonjour, comment ça va ?', time: t - 3 * DAY + 20 * MIN, mine: true } as Msg,
+		{ id: t - 600000, text: '你好，最近怎么样？', time: t - 3 * DAY + 21 * MIN, mine: false } as Msg
+	]
+	saveMsgs('demo3', msgs3)
+	list.push({
+		id: 'demo3',
+		charId: 'ch3',
+		charName: '翻译官',
+		charEmoji: '🦊',
+		lastText: '你好，最近怎么样？',
+		lastTime: t - 3 * DAY + 21 * MIN
+	} as Chat)
+
+	saveChats(list)
+}

@@ -1,0 +1,16 @@
+/** 读 onLoad 参数：App 端走 UTSJSONObject.getString，web 端类型声明里没有这个方法，走索引取值 */
+export function optStr(options: OnLoadOptions, key: string): string {
+	// #ifdef APP
+	const s = options.getString(key)
+	if (s != null) {
+		return s!
+	}
+	// #endif
+	// #ifndef APP
+	const s2 = options[key]
+	if (s2 != null) {
+		return s2.toString()
+	}
+	// #endif
+	return ''
+}

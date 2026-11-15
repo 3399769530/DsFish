@@ -1,0 +1,67 @@
+{
+	"pages": [ //pages数组中第一项表示应用启动页，参考：https://doc.dcloud.net.cn/uni-app-x/collocation/pagesjson.html
+		{
+			"path": "pages/index/index",
+			"style": {
+				"navigationBarTitleText": "摸鱼 Chat",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		},
+		{
+			"path": "pages/config/config",
+			"style": {
+				"navigationBarTitleText": "配置",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		},
+		{
+			"path": "pages/chat/chat",
+			"style": {
+				"navigationBarTitleText": "聊天",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		},
+		{
+			"path": "pages/char/char",
+			"style": {
+				"navigationBarTitleText": "角色卡",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		},
+		{
+			"path": "pages/chatset/chatset",
+			"style": {
+				"navigationBarTitleText": "会话设定",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		},
+		{
+			"path": "pages/restore/restore",
+			"style": {
+				"navigationBarTitleText": "粘贴备份",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		},
+		{
+			"path": "pages/memory/memory",
+			"style": {
+				"navigationBarTitleText": "记忆管理",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		}
+	],
+	"globalStyle": {
+		"navigationBarTextStyle": "black",
+		"navigationBarTitleText": "摸鱼 Chat",
+		"navigationBarBackgroundColor": "#F7F2E8",
+		"backgroundColor": "#F7F2E8"
+	},
+	"uniIdRouter": {}
+}

@@ -1,0 +1,130 @@
+<template>
+	<view v-if="visible" class="mask" :style="shown ? 'opacity:1' : 'opacity:0'" @click="onClose">
+		<view class="sheet" :style="'transform: translateY(' + (shown ? '0px' : SHEET_DISTANCE) + ')'" @click="stop">
+			<text v-if="title.length > 0" class="sheet-title">{{ title }}</text>
+
+			<view class="items">
+				<view v-for="(it, i) in items" :key="i" class="item" @click="onPick(i)">
+					<text class="item-t" :style="i == dangerIndex ? 'color:#B4553C' : 'color:#1C1A16'">{{ it }}</text>
+				</view>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+	/**
+	 * 底部纸质弹层
+	 * App 端 uvue 不支持 CSS @keyframes，但支持 transition-* 属性，
+	 * 所以这里用「先渲染在下方 → 下一帧切到最终位置」的方式让渲染层自己插值。
+	 */
+	const SHEET_DISTANCE: string = '280px'
+
+	export default {
+		props: {
+			visible: {
+				type: Boolean,
+				default: false
+			},
+			title: {
+				type: String,
+				default: ''
+			},
+			items: {
+				type: Array,
+				default: new Array<string>()
+			},
+			/** 哪一项用强调色（危险操作），-1 表示没有 */
+			dangerIndex: {
+				type: Number,
+				default: -1
+			}
+		},
+		emits: ['pick', 'close'],
+		data() {
+			return {
+				shown: false,
+				SHEET_DISTANCE: SHEET_DISTANCE
+			}
+		},
+		watch: {
+			visible(v: boolean) {
+				if (v) {
+					// 先以「在下方 + 透明」渲染一帧，下一帧再切到最终位置，transition 才能生效
+					this.shown = false
+					setTimeout(() => {
+						this.shown = true
+					}, 24)
+				} else {
+					this.shown = false
+				}
+			}
+		},
+		methods: {
+			onClose(): void {
+				this.$emit('close')
+			},
+			onPick(i: number): void {
+				this.$emit('pick', i)
+			},
+			stop(): void {
+				// 挡住遮罩的点击
+			}
+		}
+	}
+</script>
+
+<style>
+	.mask {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(28, 26, 22, 0.32);
+		justify-content: flex-end;
+		/* 弹层永远盖在悬浮 tab 之类的浮层之上 */
+		z-index: 100;
+		transition-property: opacity;
+		transition-duration: 180ms;
+		transition-timing-function: ease-out;
+	}
+
+	.sheet {
+		background-color: #F7F2E8;
+		border-top-left-radius: 10px;
+		border-top-right-radius: 10px;
+		padding-bottom: 8px;
+		transition-property: transform;
+		transition-duration: 260ms;
+		transition-timing-function: ease-out;
+		padding-top: 0;
+	}
+
+	.sheet-title {
+		font-size: 11px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+		text-align: center;
+		padding: 12px 0;
+	}
+
+	.items {
+		flex-direction: column;
+	}
+
+	.item {
+		padding-top: 16px;
+		padding-bottom: 16px;
+		align-items: center;
+		border-top-width: 1px;
+		border-top-style: solid;
+		border-top-color: #E4DBC9;
+	}
+
+	.item-t {
+		font-size: 13px;
+		letter-spacing: 0.5px;
+	}
+</style>

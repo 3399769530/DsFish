@@ -1,0 +1,700 @@
+<template>
+	<view class="page">
+
+		<!-- 头部 -->
+		<view class="nav" :style="'padding-top:' + headPad + 'px'">
+			<view class="back" @click="goBack">
+				<text class="back-t">←</text>
+			</view>
+			<text class="title">{{ isNew ? '新建角色卡' : '编辑角色卡' }}</text>
+		</view>
+		<view class="rule"></view>
+
+		<scroll-view class="body" scroll-y="true">
+			<view class="wrap">
+
+				<!-- 预览：头像（可点选图片） + 昵称 -->
+				<view class="hero">
+					<view class="hero-ava" @click="onPickAvatar">
+						<image v-if="avatarPath.length > 0" class="hero-img" :src="avatarPath" mode="aspectFill"></image>
+						<text v-else class="hero-ava-t">{{ avatarText(c.name) }}</text>
+					</view>
+					<view class="hero-main">
+						<input class="hero-name-in" :value="heroName()" :maxlength="24" placeholder="未命名角色"
+							placeholder-style="color:#B9B1A0" @input="onHeroInput" />
+						<text class="hero-sub">{{ c.userName.length > 0 ? '用户是「' + c.userName + '」' : '还没设置用户昵称' }}</text>
+						<view class="hero-actions">
+							<text class="hero-link" @click="onPickAvatar">{{ avatarPath.length > 0 ? '换张图片' : '选择图片' }}</text>
+							<text v-if="avatarPath.length > 0" class="hero-link-del" @click="onClearAvatar">移除</text>
+						</view>
+					</view>
+				</view>
+
+				<!-- 角色昵称 -->
+				<view class="field">
+					<text class="label">角色昵称</text>
+					<input class="input" :value="c.name" :maxlength="24" placeholder="比如：大肥鱼"
+						placeholder-style="color:#B9B1A0" @input="onNameInput" />
+					<view class="input-line"></view>
+					<text class="tip">AI 扮演的角色叫什么（对话和提示词里用）；改它上面会跟着变，除非你在上面单独改过名字</text>
+				</view>
+
+				<!-- 用户昵称 -->
+				<view class="field">
+					<text class="label">用户昵称</text>
+					<input class="input" :value="c.userName" :maxlength="24" placeholder="比如：主人"
+						placeholder-style="color:#B9B1A0" @input="onUserInput" />
+					<view class="input-line"></view>
+					<text class="tip">你在对话里被怎么称呼；可留空</text>
+				</view>
+
+				<!-- 系统提示词 -->
+				<view class="field">
+					<text class="label">系统提示词</text>
+					<textarea class="textarea" :value="c.prompt" :maxlength="4000" placeholder="描述这个角色是谁、说话风格、要遵守的规则…"
+						placeholder-style="color:#B9B1A0" @input="onPromptInput"></textarea>
+					<view class="input-line"></view>
+					<view class="tip-row">
+						<text class="tip-t">可以用</text>
+						<view class="chip" @click="insertVar(varChar)">
+							<text class="chip-t">{{ varChar }}</text>
+						</view>
+						<text class="tip-t">和</text>
+						<view class="chip" @click="insertVar(varUser)">
+							<text class="chip-t">{{ varUser }}</text>
+						</view>
+						<text class="tip-t">占位</text>
+					</view>
+					<text class="tip">点一下标签，会插到提示词末尾；保存时自动换成上面两个昵称</text>
+				</view>
+
+				<!-- 默认好感度 -->
+				<view class="field">
+					<view class="aff-row">
+						<text class="label">默认好感度</text>
+						<input class="aff-input" type="number" :value="affText" :maxlength="3" placeholder="20"
+							placeholder-style="color:#B9B1A0" @input="onAffInput" />
+					</view>
+					<view class="input-line"></view>
+					<text class="tip">新建会话时的初始好感度，0~100；已有的会话不受影响</text>
+				</view>
+
+				<!-- 初始对话 -->
+				<view class="section">
+					<text class="sec-t">初始对话</text>
+					<text class="sec-n">{{ c.dialogs.length }} / 10</text>
+				</view>
+				<text class="section-tip">开聊时这段对话会作为已经发生的对话铺进去</text>
+
+				<view v-for="(d, i) in c.dialogs" :key="i" class="dlg">
+					<view class="role" :style="d.role == 'user' ? 'background-color:#1C1A16' : 'background-color:#EDE5D5'" @click="toggleRole(i)">
+						<text class="role-t" :style="d.role == 'user' ? 'color:#F7F2E8' : 'color:#1C1A16'">{{ d.role == 'user' ? '我' : '角色' }}</text>
+					</view>
+					<input class="dlg-input" :value="d.text" :maxlength="200" placeholder="这一句说什么…"
+						placeholder-style="color:#B9B1A0" @input="onDialogInput($event, i)" />
+					<view class="del" @click="removeDialog(i)">
+						<text class="del-t">✕</text>
+					</view>
+				</view>
+
+				<view v-if="c.dialogs.length < 10" class="addbtn" @click="addDialog">
+					<dash-border :cols="dashCols" :rows="5" color="#BDB3A1"></dash-border>
+					<text class="addbtn-t">＋ 添加一条对话</text>
+				</view>
+				<view v-else class="limit-tip">
+					<text class="limit-t">最多 10 条，删掉一条才能再加</text>
+				</view>
+
+				<!-- 保存 -->
+				<view class="savebtn" @click="onSave">
+					<text class="savebtn-t">保存角色卡</text>
+				</view>
+
+				<view v-if="!isNew" class="delbtn" @click="onDelete">
+					<text class="delbtn-t">删除这张角色卡</text>
+				</view>
+
+				<view class="pad"></view>
+			</view>
+		</scroll-view>
+
+		<paper-sheet :visible="sheetOpen" :title="sheetTitle" :items="sheetItems" :dangerIndex="sheetDanger"
+			@pick="onSheetPick" @close="closeSheet"></paper-sheet>
+	</view>
+</template>
+
+<script lang="uts">
+	import { Character, InitDialog, avatarText, newChar, findChar, upsertChar, deleteChar, parseNumberText } from '../../utils/store.uts'
+	import { optStr } from '../../utils/opt.uts'
+	import { clampAffinity } from '../../utils/affinity.uts'
+	import { PickResult, pickAvatar, removeAvatarFile } from '../../utils/image.uts'
+	import DashBorder from '../../components/dash-border/dash-border.uvue'
+	import PaperSheet from '../../components/paper-sheet/paper-sheet.uvue'
+
+	export default {
+		components: {
+			DashBorder,
+			PaperSheet
+		},
+		data() {
+			return {
+				headPad: 18,
+				isNew: true,
+				avatarPath: '',
+				varChar: '{{char}}',
+				varUser: '{{user}}',
+				affText: '20',
+				labelText: '',
+				dashCols: 24,
+				sheetOpen: false,
+				sheetTitle: '',
+				sheetItems: new Array<string>(),
+				sheetDanger: -1,
+				c: newChar() as Character
+			}
+		},
+		onLoad(options: OnLoadOptions) {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 14
+				}
+				// 虚线框段数按屏宽估（每段 5px + 约 4px 间隙）
+				const ww = info.windowWidth
+				if (ww > 100) {
+					let cols = Math.floor((ww - 48) / 9)
+					if (cols < 8) {
+						cols = 8
+					}
+					if (cols > 90) {
+						cols = 90
+					}
+					this.dashCols = cols
+				}
+			} catch (e) {
+				// 默认值
+			}
+			const id = optStr(options, 'id')
+			if (id.length > 0) {
+				const found = findChar(id)
+				if (found != null) {
+					this.c = found!
+					this.isNew = false
+					if (this.c.avatar != null) {
+						this.avatarPath = this.c.avatar!
+					}
+					const init = this.c.affinity != null ? clampAffinity(this.c.affinity!) : 20
+					this.affText = init.toString()
+					this.labelText = this.c.label != null ? this.c.label! : ''
+				}
+			}
+		},
+		methods: {
+			onPickAvatar(): void {
+				pickAvatar((r: PickResult) => {
+					// 取消选择就安静地什么都不做
+					if (!r.ok) {
+						return
+					}
+					// 换图时把旧文件删掉，避免越存越多
+					if (this.avatarPath.length > 0 && this.avatarPath != r.path) {
+						removeAvatarFile(this.avatarPath)
+					}
+					this.avatarPath = r.path
+					this.c.avatar = r.path
+				})
+			},
+			onClearAvatar(): void {
+				if (this.avatarPath.length > 0) {
+					removeAvatarFile(this.avatarPath)
+				}
+				this.avatarPath = ''
+				this.c.avatar = ''
+			},
+			avatarText(name: string): string {
+				return avatarText(name)
+			},
+			insertVar(v: string): void {
+				const p = this.c.prompt
+				if (p.length == 0) {
+					this.c.prompt = v
+					return
+				}
+				const last = p.substring(p.length - 1, p.length)
+				if (last == ' ') {
+					this.c.prompt = p + v
+					return
+				}
+				this.c.prompt = p + ' ' + v
+			},
+			onNameInput(e: InputEvent): void {
+				const oldName = this.c.name
+				this.c.name = e.detail.value
+				// 顶部名字没单独定制过（为空或与昵称一致）就跟着昵称走
+				if (this.labelText.length == 0 || this.labelText == oldName) {
+					this.labelText = ''
+				}
+			},
+			heroName(): string {
+				return this.labelText.length > 0 ? this.labelText : this.c.name
+			},
+			onHeroInput(e: InputEvent): void {
+				const v = e.detail.value
+				// 改成和昵称一样就回到「跟随」状态
+				this.labelText = v == this.c.name ? '' : v
+			},
+			onUserInput(e: InputEvent): void {
+				this.c.userName = e.detail.value
+			},
+			onAffInput(e: InputEvent): void {
+				this.affText = e.detail.value
+				const v = parseNumberText(this.affText)
+				if (v >= 0) {
+					this.c.affinity = v > 100 ? 100 : Math.floor(v)
+				}
+			},
+			onPromptInput(e: InputEvent): void {
+				this.c.prompt = e.detail.value
+			},
+			onDialogInput(e: InputEvent, i: number): void {
+				const list = this.c.dialogs
+				if (i < 0 || i >= list.length) {
+					return
+				}
+				const d = list[i]
+				list[i] = { role: d.role, text: e.detail.value } as InitDialog
+				this.c.dialogs = list
+			},
+			toggleRole(i: number): void {
+				const list = this.c.dialogs
+				if (i < 0 || i >= list.length) {
+					return
+				}
+				const d = list[i]
+				list[i] = { role: d.role == 'user' ? 'assistant' : 'user', text: d.text } as InitDialog
+				this.c.dialogs = list
+			},
+			addDialog(): void {
+				if (this.c.dialogs.length >= 10) {
+					return
+				}
+				const list = this.c.dialogs
+				const nextRole = list.length > 0 && list[list.length - 1].role == 'assistant' ? 'user' : 'assistant'
+				list.push({ role: nextRole, text: '' } as InitDialog)
+				this.c.dialogs = list
+			},
+			removeDialog(i: number): void {
+				const list = this.c.dialogs
+				if (i < 0 || i >= list.length) {
+					return
+				}
+				const next: Array<InitDialog> = []
+				for (let k = 0; k < list.length; k++) {
+					if (k != i) {
+						next.push(list[k])
+					}
+				}
+				this.c.dialogs = next
+			},
+			onSave(): void {
+				const name = this.c.name.trim()
+				if (name.length == 0) {
+					uni.showToast({ title: '先填个角色昵称', icon: 'none' })
+					return
+				}
+				this.c.name = name
+				this.c.label = this.labelText.trim()
+				this.c.userName = this.c.userName.trim()
+				this.c.prompt = this.c.prompt.trim()
+				// 默认好感度：按输入框文本重新算，空或非法就按 20
+				const affV = parseNumberText(this.affText)
+				if (affV < 0) {
+					this.c.affinity = 20
+				} else {
+					this.c.affinity = affV > 100 ? 100 : Math.floor(affV)
+				}
+				// 丢掉空白对话
+				const keep: Array<InitDialog> = []
+				for (let i = 0; i < this.c.dialogs.length; i++) {
+					const d = this.c.dialogs[i]
+					if (d.text.trim().length > 0) {
+						keep.push({ role: d.role, text: d.text.trim() } as InitDialog)
+					}
+				}
+				this.c.dialogs = keep
+				upsertChar(this.c)
+				uni.showToast({ title: '已保存', icon: 'none' })
+				setTimeout(() => {
+					uni.navigateBack()
+				}, 400)
+			},
+			onDelete(): void {
+				this.sheetTitle = '删除角色卡？删除后不可恢复，已有的聊天记录会保留'
+				this.sheetItems = ['确认删除']
+				this.sheetDanger = 0
+				this.sheetOpen = true
+			},
+			closeSheet(): void {
+				this.sheetOpen = false
+			},
+			onSheetPick(i: number): void {
+				this.sheetOpen = false
+				if (i != 0) {
+					return
+				}
+				deleteChar(this.c.id)
+				uni.showToast({ title: '已删除', icon: 'none' })
+				setTimeout(() => {
+					uni.navigateBack()
+				}, 400)
+			},
+			goBack(): void {
+				uni.navigateBack()
+			}
+		}
+	}
+</script>
+
+<style>
+	.page {
+		flex: 1;
+		flex-direction: column;
+		background-color: #F7F2E8;
+	}
+
+	.nav {
+		flex-direction: row;
+		align-items: flex-end;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 10px;
+	}
+
+	.back {
+		width: 34px;
+		height: 30px;
+		justify-content: flex-end;
+		padding-bottom: 4px;
+	}
+
+	.back-t {
+		font-size: 20px;
+		color: #1C1A16;
+	}
+
+	.title {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 23px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #1C1A16;
+		margin-left: 6px;
+	}
+
+	.rule {
+		height: 2px;
+		background-color: #1C1A16;
+		margin-left: 24px;
+		margin-right: 24px;
+	}
+
+	.body {
+		flex: 1;
+	}
+
+	.wrap {
+		padding-left: 24px;
+		padding-right: 24px;
+	}
+
+	/* 预览 */
+	.hero {
+		flex-direction: row;
+		align-items: center;
+		padding-top: 16px;
+		padding-bottom: 16px;
+	}
+
+	.hero-ava {
+		width: 64px;
+		height: 64px;
+		border-radius: 10px;
+		align-items: center;
+		justify-content: center;
+		overflow: hidden;
+		background-color: #EDE5D5;
+	}
+
+	.hero-img {
+		width: 64px;
+		height: 64px;
+	}
+
+	.hero-actions {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 8px;
+	}
+
+	.hero-link {
+		font-size: 12px;
+		color: #B4553C;
+		border-bottom-width: 1px;
+		border-bottom-style: solid;
+		border-bottom-color: #B4553C;
+		padding-bottom: 1px;
+	}
+
+	.hero-link-del {
+		font-size: 12px;
+		color: #A9A292;
+		margin-left: 14px;
+	}
+
+	.hero-ava-t {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 22px;
+		font-weight: bold;
+		color: #1C1A16;
+	}
+
+	.hero-main {
+		flex: 1;
+		margin-left: 12px;
+	}
+
+	.hero-name-in {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 20px;
+		font-weight: bold;
+		color: #1C1A16;
+		background-color: #00000000;
+		border-width: 0;
+		border-color: #00000000;
+		padding: 0;
+	}
+
+	.hero-sub {
+		font-size: 11.5px;
+		color: #8A8375;
+		margin-top: 4px;
+	}
+
+	/* 字段 */
+	.aff-row {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.aff-input {
+		width: 90px;
+		text-align: right;
+		font-family: monospace;
+		font-size: 15px;
+		color: #1C1A16;
+	}
+	.field {
+		padding-top: 18px;
+	}
+
+	.label {
+		font-size: 11px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.input {
+		height: 38px;
+		font-size: 15px;
+		color: #1C1A16;
+		margin-top: 4px;
+	}
+
+	.textarea {
+		width: 100%;
+		height: 150px;
+		font-size: 14px;
+		color: #1C1A16;
+		margin-top: 6px;
+		line-height: 22px;
+	}
+
+	.input-line {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.tip-row {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 8px;
+		flex-wrap: wrap;
+	}
+
+	.tip-t {
+		font-size: 11.5px;
+		color: #A9A292;
+		margin-right: 5px;
+	}
+
+	.chip {
+		padding-left: 6px;
+		padding-right: 6px;
+		padding-top: 2px;
+		padding-bottom: 2px;
+		border-width: 1px;
+		border-style: solid;
+		border-color: #C9A38F;
+		border-radius: 3px;
+		margin-right: 5px;
+	}
+
+	.chip-t {
+		font-family: monospace;
+		font-size: 11px;
+		color: #B4553C;
+	}
+
+	.tip {
+		font-size: 11px;
+		line-height: 17px;
+		color: #A9A292;
+		margin-top: 7px;
+	}
+
+	/* 初始对话 */
+	.section {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding-top: 26px;
+	}
+
+	.sec-t {
+		font-size: 11px;
+		letter-spacing: 3px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.sec-n {
+		font-family: monospace;
+		font-size: 11px;
+		color: #A9A292;
+	}
+
+	.section-tip {
+		font-size: 11px;
+		color: #A9A292;
+		margin-top: 6px;
+		margin-bottom: 6px;
+	}
+
+	.dlg {
+		flex-direction: row;
+		align-items: center;
+		padding-top: 8px;
+		padding-bottom: 8px;
+		border-bottom-width: 1px;
+		border-bottom-style: solid;
+		border-bottom-color: #DCD4C4;
+	}
+
+	.role {
+		flex-direction: row;
+		width: 40px;
+		height: 26px;
+		border-radius: 3px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.role-t {
+		font-size: 11.5px;
+		letter-spacing: 1px;
+	}
+
+	.dlg-input {
+		flex: 1;
+		height: 34px;
+		margin-left: 10px;
+		font-size: 14px;
+		color: #1C1A16;
+	}
+
+	.del {
+		flex-direction: row;
+		width: 28px;
+		height: 28px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.del-t {
+		font-size: 13px;
+		color: #B9B1A0;
+	}
+
+	.addbtn {
+		position: relative;
+		flex-direction: row;
+		margin-top: 16px;
+		padding-top: 11px;
+		padding-bottom: 11px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.addbtn-t {
+		font-size: 12.5px;
+		letter-spacing: 1px;
+		color: #6B6656;
+		width: 100%;
+		text-align: center;
+	}
+
+	.limit-tip {
+		margin-top: 14px;
+		align-items: center;
+	}
+
+	.limit-t {
+		font-size: 11.5px;
+		color: #B4553C;
+	}
+
+	/* 保存 */
+	.savebtn {
+		flex-direction: row;
+		margin-top: 22px;
+		padding-top: 14px;
+		padding-bottom: 14px;
+		background-color: #1C1A16;
+		border-radius: 3px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.savebtn-t {
+		font-size: 13px;
+		letter-spacing: 3px;
+		color: #F7F2E8;
+	}
+
+	.delbtn {
+		margin-top: 16px;
+		align-items: center;
+	}
+
+	.delbtn-t {
+		font-size: 12px;
+		color: #B4553C;
+	}
+
+	.pad {
+		height: 30px;
+	}
+</style>

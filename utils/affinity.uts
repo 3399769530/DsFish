@@ -1,0 +1,234 @@
+/**
+ * 好感度
+ * 数值由前端掌控（0~100），模型只在回复末尾给一个变化量，前端解析后抹掉标记。
+ */
+export const AFF_MIN: number = 0
+export const AFF_MAX: number = 100
+export const AFF_START: number = 20
+const DELTA_LIMIT: number = 8
+
+export type AffinityLevel = {
+	label: string
+	color: string
+	min: number
+	max: number
+	/** 所在区间的进度 0~1 */
+	progress: number
+	/** 给模型看的关系描述 */
+	relation: string
+}
+
+export type AffinityParse = {
+	/** 去掉标记后的正文 */
+	text: string
+	/** 本次变化量 */
+	delta: number
+}
+
+export function clampAffinity(v: number): number {
+	if (v < AFF_MIN) {
+		return AFF_MIN
+	}
+	if (v > AFF_MAX) {
+		return AFF_MAX
+	}
+	return v
+}
+
+type LevelDef = {
+	label: string
+	color: string
+	/** 这一档的起点 */
+	min: number
+	relation: string
+}
+
+/**
+ * 七档，每档 15 点，最后一档 90~100
+ * relation 是写进 <系统信息>、给模型定语气的那句话
+ */
+const LEVELS: Array<LevelDef> = [
+	{ label: '冷淡', color: '#A9A292', min: 0, relation: '将用户视作陌生人，保持距离' } as LevelDef,
+	{ label: '客气', color: '#8A8375', min: 15, relation: '将用户视作刚认识的人，客气疏远' } as LevelDef,
+	{ label: '熟络', color: '#B98A2E', min: 30, relation: '将用户视作聊得来的熟人，放松自然' } as LevelDef,
+	{ label: '朋友', color: '#C1763A', min: 45, relation: '将用户视作朋友，愿意分享日常' } as LevelDef,
+	{ label: '亲近', color: '#BB5F45', min: 60, relation: '将用户视作亲近的朋友，会主动关心' } as LevelDef,
+	{ label: '喜欢', color: '#B4553C', min: 75, relation: '将用户视作喜欢的人，语气亲昵' } as LevelDef,
+	{ label: '心动', color: '#A8302A', min: 90, relation: '将用户视作心动对象，黏人又在意' } as LevelDef
+]
+
+/** 当前值落在第几档（0 开始） */
+function levelIndex(x: number): number {
+	let i = LEVELS.length - 1
+	while (i > 0 && x < LEVELS[i].min) {
+		i--
+	}
+	return i
+}
+
+export function levelOf(v: number): AffinityLevel {
+	const x = clampAffinity(v)
+	const i = levelIndex(x)
+	const d = LEVELS[i]
+	const lo = d.min
+	const hi = (i + 1 < LEVELS.length) ? LEVELS[i + 1].min : AFF_MAX
+	let p = (x - lo) * 1.0 / (hi - lo) * 1.0
+	if (p < 0) {
+		p = 0
+	}
+	if (p > 1) {
+		p = 1
+	}
+	return {
+		label: d.label,
+		color: d.color,
+		min: lo,
+		max: hi,
+		progress: p,
+		relation: d.relation
+	} as AffinityLevel
+}
+
+/** 下一档叫什么，已经满级就返回空串 */
+export function nextLevelLabel(v: number): string {
+	const i = levelIndex(clampAffinity(v))
+	if (i + 1 >= LEVELS.length) {
+		return ''
+	}
+	return LEVELS[i + 1].label
+}
+
+function parseSignedInt(s: string): number {
+	let i = 0
+	let sign = 1
+	if (s.length > 0 && s.substring(0, 1) == '+') {
+		i = 1
+	} else if (s.length > 0 && s.substring(0, 1) == '-') {
+		sign = -1
+		i = 1
+	}
+	// 不用 charCodeAt：它在 uts 里返回可空数字，Kotlin 侧不能直接比较
+	const table = '0123456789'
+	let v = 0
+	let n = 0
+	while (i < s.length) {
+		const ch = s.substring(i, i + 1)
+		const d = table.indexOf(ch)
+		if (d < 0) {
+			break
+		}
+		v = v * 10 + d
+		n++
+		i++
+	}
+	if (n == 0) {
+		return 0
+	}
+	return v * sign
+}
+
+/** 解析并去掉 [affinity:+3] 这类标记（容忍大小写、全角冒号、空格、中文方括号） */
+export function parseAffinity(raw: string): AffinityParse {
+	let delta = 0
+	let out = ''
+	let i = 0
+	while (i < raw.length) {
+		const ch = raw.substring(i, i + 1)
+		if (ch == '[' || ch == '【') {
+			const close = ch == '[' ? ']' : '】'
+			const end = raw.indexOf(close, i + 1)
+			if (end > i) {
+				const inner = raw.substring(i + 1, end).trim()
+				const low = inner.toLowerCase()
+				if (low.startsWith('affinity')) {
+					let rest = inner.substring(8).trim()
+					if (rest.startsWith(':') || rest.startsWith('：')) {
+						rest = rest.substring(1).trim()
+					}
+					const v = parseSignedInt(rest)
+					// 数字后面还有别的内容就不算标记
+					if (v != 0 || rest.length > 0) {
+						const cleaned = rest
+						const tail = cleaned.substring(numLen(cleaned), cleaned.length).trim()
+						if (tail.length == 0) {
+							delta += v
+							i = end + 1
+							continue
+						}
+					}
+				}
+			}
+		}
+		out += ch
+		i++
+	}
+	if (delta > DELTA_LIMIT) {
+		delta = DELTA_LIMIT
+	}
+	if (delta < -DELTA_LIMIT) {
+		delta = -DELTA_LIMIT
+	}
+	return { text: out.trim(), delta: delta } as AffinityParse
+}
+
+/** 数字字符个数（含正负号） */
+function numLen(s: string): number {
+	let i = 0
+	if (s.length > 0) {
+		const head = s.substring(0, 1)
+		if (head == '+' || head == '-') {
+			i = 1
+		}
+	}
+	while (i < s.length) {
+		const ch = s.substring(i, i + 1)
+		if ('0123456789'.indexOf(ch) < 0) {
+			break
+		}
+		i++
+	}
+	return i
+}
+
+/** 换行符：不用 '\n' 转义，避免 Android 端 UTS 编译器的转义解析问题 */
+const NL: string = String.fromCharCode(10)
+
+/**
+ * 拼进系统提示词的好感度规则
+ * 数值本身不写在这里（它每条消息都在变），只说明规则和数值在哪
+ */
+export function affinityRule(): string {
+	return NL + NL + '【好感度】用户与你的好感度是 0~100 的数值，' +
+		'显示在每条用户消息开头的「系统消息」块里（形如「当前好感度: 30  将用户视作聊得来的熟人」），' +
+		'后半句就是当前的关系定位，请按它决定你此刻的态度、亲密度和说话方式，数值越高越亲近。' +
+		NL + '每次回复的最后单独一行，输出标记 [affinity:+N] 或 [affinity:-N]，N 为 1~8 的整数，' +
+		'表示这句话让你对用户的好感变化多少（普通闲聊 ±1，明显的好感或冒犯可以到 ±5~8）。' +
+		'这个标记只是给系统看的，不要在正文里解释它，也不要重复它。' +
+		NL + '【必须】标记只能附在正常回复的末尾：你每次都要先正常说出一句话或一段话，再在最后加标记。' +
+		'绝对不能只输出标记、不输出正文。'
+}
+
+/** 好感度对应的关系描述，给模型看的短句（跟着等级档走，阈值只在这一处定义） */
+export function relationOf(current: number): string {
+	return levelOf(current).relation
+}
+
+// ---------------- 久不联系会掉好感 ----------------
+
+/** 每满 1 天不聊掉多少 */
+export const DECAY_PER_DAY: number = 2
+/** 一次最多掉多少 */
+export const DECAY_MAX: number = 20
+
+/** 返回负数（不衰减时返回 0） */
+export function decayDelta(days: number): number {
+	if (days < 1) {
+		return 0
+	}
+	let d = days * DECAY_PER_DAY
+	if (d > DECAY_MAX) {
+		d = DECAY_MAX
+	}
+	return -d
+}
+

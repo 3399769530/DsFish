@@ -1,0 +1,523 @@
+<template>
+	<view class="page">
+
+		<!-- 头部：返回 + 标题 -->
+		<view class="nav" :style="'padding-top:' + headPad + 'px'">
+			<view class="back" @click="goBack">
+				<text class="back-t">←</text>
+			</view>
+			<text class="title">配置</text>
+		</view>
+		<view class="rule"></view>
+
+		<scroll-view class="body" scroll-y="true">
+			<view class="wrap">
+
+				<text class="hint">Key 只保存在这台设备上，不会上传。整个 App 唯一联网的地方，就是这里配置的那个模型接口。</text>
+
+				<!-- 服务商 -->
+				<view class="section">
+					<text class="sec-t">服务商</text>
+					<text class="sec-n">{{ providerLabel }}</text>
+				</view>
+
+				<view class="segs">
+					<view class="seg" @click="pickProvider('deepseek')">
+						<text class="seg-t" :style="p.provider == 'deepseek' ? 'color:#1C1A16;font-weight:bold' : 'color:#A9A292'">DeepSeek</text>
+						<view class="seg-mark" :style="p.provider == 'deepseek' ? 'background-color:#1C1A16' : 'background-color:#00000000'"></view>
+					</view>
+					<view class="seg" @click="pickProvider('openai')">
+						<text class="seg-t" :style="p.provider == 'openai' ? 'color:#1C1A16;font-weight:bold' : 'color:#A9A292'">OpenAI</text>
+						<view class="seg-mark" :style="p.provider == 'openai' ? 'background-color:#1C1A16' : 'background-color:#00000000'"></view>
+					</view>
+					<view class="seg" @click="pickProvider('ollama')">
+						<text class="seg-t" :style="p.provider == 'ollama' ? 'color:#1C1A16;font-weight:bold' : 'color:#A9A292'">Ollama</text>
+						<view class="seg-mark" :style="p.provider == 'ollama' ? 'background-color:#1C1A16' : 'background-color:#00000000'"></view>
+					</view>
+				</view>
+				<view class="hair"></view>
+
+				<!-- 接口地址 -->
+				<view class="field">
+					<text class="label">接口地址</text>
+					<input class="input" :value="p.baseUrl" :maxlength="200" placeholder="https://api.deepseek.com/v1"
+						placeholder-style="color:#B9B1A0" @input="onBaseInput" />
+					<view class="input-line"></view>
+					<text class="tip">{{ baseTip }}</text>
+				</view>
+
+				<!-- API Key -->
+				<view v-if="p.provider != 'ollama'" class="field">
+					<text class="label">API Key</text>
+					<input class="input" :value="p.apiKey" :maxlength="300" placeholder="sk-…"
+						placeholder-style="color:#B9B1A0" @input="onKeyInput" type="password"/>
+					<view class="input-line"></view>
+					<text class="tip">{{ keyTip }}</text>
+				</view>
+
+				<!-- 模型 -->
+				<view class="field">
+					<text class="label">模型</text>
+					<input class="input" :value="p.model" :maxlength="100" placeholder="deepseek-flash"
+						placeholder-style="color:#B9B1A0" @input="onModelInput" />
+					<view class="input-line"></view>
+					<text class="tip">{{ modelTip }}</text>
+				</view>
+
+				<!-- 参数 -->
+				<view class="duo">
+					<view class="duo-cell">
+						<text class="label">温度</text>
+						<input class="input" type="digit" :value="tempText" :maxlength="6" placeholder="1.0"
+							placeholder-style="color:#B9B1A0" @input="onTempInput" />
+						<view class="input-line"></view>
+					</view>
+					<view class="duo-gap"></view>
+					<view class="duo-cell">
+						<text class="label">最大输出</text>
+						<input class="input" type="number" :value="maxText" :maxlength="6" placeholder="2048"
+							placeholder-style="color:#B9B1A0" @input="onMaxInput" />
+						<view class="input-line"></view>
+					</view>
+				</view>
+
+				<text class="tip">「最大输出」= 一次回复最多吐多少 token（思考链也算在内），被截断就调大它；「上下文上限」= 整段对话的预算，管的是压缩时机</text>
+
+				<!-- 上下文预算 -->
+				<view class="field">
+					<text class="label">上下文上限（tokens）</text>
+					<input class="input" type="number" :value="ctxText" :maxlength="7" placeholder="128000"
+						placeholder-style="color:#B9B1A0" @input="onCtxInput" />
+					<view class="input-line"></view>
+					<text class="tip">用到这个量的 70% 就会把旧对话压缩成摘要（保留最近 10% 原文）；本地模型建议 32K 以内，DeepSeek 可以到 1M</text>
+				</view>
+
+				<!-- 测试 -->
+				<view class="test-row">
+					<view class="testbtn" @click="onTest">
+						<text class="testbtn-t">{{ testing ? '测试中…' : '测试连接' }}</text>
+					</view>
+					<view class="test-state">
+						<view class="dot" :style="'background-color:' + testColor"></view>
+						<text class="test-msg" :style="'color:' + testColor">{{ testMsg }}</text>
+					</view>
+				</view>
+
+				<!-- 保存 -->
+				<view class="savebtn" @click="onSave">
+					<text class="savebtn-t">保存并使用</text>
+				</view>
+
+				<text class="footer">切换服务商时，各家的 Key 分别保存，不会互相覆盖。</text>
+				<view class="pad"></view>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script lang="uts">
+	import { Profile, findProvider, getProfile, updateProfile, setActiveProvider, getActiveProvider, emptyProfile, parseNumberText, contextBudgetOf } from '../../utils/store.uts'
+	import { TestResult, testConnection } from '../../utils/api.uts'
+
+	export default {
+		data() {
+			return {
+				headPad: 18,
+				p: emptyProfile() as Profile,
+				providerLabel: '',
+				baseTip: '',
+				keyTip: '',
+				modelTip: '',
+				tempText: '0.8',
+				maxText: '1024',
+				ctxText: '128000',
+				testing: false,
+				testMsg: '还没测试',
+				testColor: '#A9A292'
+			}
+		},
+		onLoad() {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 14
+				}
+			} catch (e) {
+				// 用默认值
+			}
+			this.p = getProfile(getActiveProvider())
+			this.syncText()
+			this.refreshTips()
+			if (this.p.verified) {
+				this.testMsg = '上次测试通过'
+				this.testColor = '#2F5D50'
+			} else if (this.p.lastError.length > 0) {
+				this.testMsg = this.p.lastError
+				this.testColor = '#B4553C'
+			}
+		},
+		methods: {
+			syncText(): void {
+				this.tempText = this.p.temperature.toString()
+				this.maxText = this.p.maxTokens.toString()
+				this.ctxText = contextBudgetOf(this.p).toString()
+			},
+			refreshTips(): void {
+				const preset = findProvider(this.p.provider)
+				this.providerLabel = preset != null ? preset!.label : this.p.provider
+				if (this.p.provider == 'deepseek') {
+					this.baseTip = '官方地址，一般不用改'
+					this.keyTip = '在 platform.deepseek.com 创建，sk- 开头'
+					this.modelTip = '官方推荐 deepseek-flash 或 deepseek-v4-pro'
+				} else if (this.p.provider == 'openai') {
+					this.baseTip = '官方地址或中转地址，末尾带 /v1'
+					this.keyTip = 'sk- 开头；中转站一般也用它自己的 Key'
+					this.modelTip = '例如 gpt-4o-mini'
+				} else {
+					this.baseTip = '本机地址，默认 11434 端口；App 跑在手机上时不能写 localhost'
+					this.keyTip = ''
+					this.modelTip = '先用 ollama list 看已经下载了哪些模型'
+				}
+			},
+			resetTest(): void {
+				this.testing = false
+				this.testColor = '#A9A292'
+				this.testMsg = '还没测试'
+			},
+			pickProvider(id: string): void {
+				if (id == this.p.provider) {
+					return
+				}
+				updateProfile(this.p)
+				this.p = getProfile(id)
+				this.syncText()
+				this.refreshTips()
+				this.resetTest()
+			},
+			onBaseInput(e: InputEvent): void {
+				this.p.baseUrl = e.detail.value
+				this.testColor = '#A9A292'
+				this.testMsg = '地址已改，重新测试'
+			},
+			onKeyInput(e: InputEvent): void {
+				this.p.apiKey = e.detail.value
+				this.testColor = '#A9A292'
+				this.testMsg = 'Key 已改，重新测试'
+			},
+			onModelInput(e: InputEvent): void {
+				this.p.model = e.detail.value
+			},
+			onTempInput(e: InputEvent): void {
+				this.tempText = e.detail.value
+				const v = parseNumberText(this.tempText)
+				if (v >= 0 && v <= 2) {
+					this.p.temperature = v
+				}
+			},
+			onMaxInput(e: InputEvent): void {
+				this.maxText = e.detail.value
+				const v = parseNumberText(this.maxText)
+				if (v >= 64 && v <= 1000000) {
+					this.p.maxTokens = v
+				}
+			},
+			onCtxInput(e: InputEvent): void {
+				this.ctxText = e.detail.value
+				const v = parseNumberText(this.ctxText)
+				if (v > 0) {
+					this.p.contextTokens = Math.floor(v)
+				}
+			},
+			onTest(): void {
+				if (this.testing) {
+					return
+				}
+				if (this.p.provider != 'ollama' && this.p.apiKey.trim().length == 0) {
+					this.testMsg = '先填 Key 再测试'
+					this.testColor = '#B4553C'
+					return
+				}
+				this.testing = true
+				this.testMsg = '正在连接…'
+				this.testColor = '#A9A292'
+				testConnection(this.p, (r: TestResult) => {
+					this.testing = false
+					this.testMsg = r.message
+					this.testColor = r.ok ? '#2F5D50' : '#B4553C'
+					this.p.verified = r.ok
+					this.p.lastError = r.ok ? '' : r.message
+					updateProfile(this.p)
+				})
+			},
+			onSave(): void {
+				// 以输入框里的文本为准重新解析，避免「改了但没生效」
+				const ctxV = parseNumberText(this.ctxText)
+				if (ctxV < 200 || ctxV > 1000000) {
+					this.testMsg = '上下文上限请填 200 ~ 1000000 之间的整数'
+					this.testColor = '#B4553C'
+					return
+				}
+				this.p.contextTokens = Math.floor(ctxV)
+				if (ctxV < 2000) {
+					uni.showToast({ title: '上限偏小，会频繁压缩，建议 2000 以上', icon: 'none' })
+				}
+
+				const tempV = parseNumberText(this.tempText)
+				if (tempV >= 0 && tempV <= 2) {
+					this.p.temperature = tempV
+				}
+				const maxV = parseNumberText(this.maxText)
+				if (maxV >= 64) {
+					this.p.maxTokens = Math.floor(maxV)
+				}
+
+				this.p.baseUrl = this.p.baseUrl.trim()
+				this.p.apiKey = this.p.apiKey.trim()
+				this.p.model = this.p.model.trim()
+				if (this.p.model.length == 0) {
+					this.testMsg = '模型名不能为空'
+					this.testColor = '#B4553C'
+					return
+				}
+				updateProfile(this.p)
+				setActiveProvider(this.p.provider)
+				uni.showToast({ title: '已保存', icon: 'none' })
+				setTimeout(() => {
+					uni.navigateBack()
+				}, 450)
+			},
+			goBack(): void {
+				uni.navigateBack()
+			}
+		}
+	}
+</script>
+
+<style>
+	.page {
+		flex: 1;
+		flex-direction: column;
+		background-color: #F7F2E8;
+	}
+
+	/* ---------- 头部 ---------- */
+	.nav {
+		flex-direction: row;
+		align-items: flex-end;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 10px;
+	}
+
+	.back {
+		width: 34px;
+		height: 30px;
+		justify-content: flex-end;
+		padding-bottom: 4px;
+	}
+
+	.back-t {
+		font-size: 20px;
+		color: #1C1A16;
+	}
+
+	.title {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 25px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #1C1A16;
+		margin-left: 6px;
+	}
+
+	.rule {
+		height: 2px;
+		background-color: #1C1A16;
+		margin-left: 24px;
+		margin-right: 24px;
+	}
+
+	.body {
+		flex: 1;
+	}
+
+	.wrap {
+		padding-left: 24px;
+		padding-right: 24px;
+	}
+
+	.hint {
+		font-size: 12px;
+		line-height: 19px;
+		color: #8A8375;
+		margin-top: 14px;
+	}
+
+	/* ---------- 服务商 ---------- */
+	.section {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		padding-top: 24px;
+		padding-bottom: 4px;
+	}
+
+	.sec-t {
+		font-size: 11px;
+		letter-spacing: 3px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.sec-n {
+		font-size: 11px;
+		letter-spacing: 1px;
+		color: #A9A292;
+	}
+
+	.segs {
+		flex-direction: row;
+		align-items: flex-end;
+		padding-top: 6px;
+	}
+
+	.seg {
+		flex: 1;
+		align-items: center;
+		padding-top: 8px;
+	}
+
+	.seg-t {
+		font-size: 14px;
+		letter-spacing: 0.5px;
+	}
+
+	.seg-mark {
+		width: 20px;
+		height: 2px;
+		margin-top: 7px;
+	}
+
+	.hair {
+		height: 1px;
+		background-color: #DCD4C4;
+		margin-top: 6px;
+	}
+
+	/* ---------- 字段 ---------- */
+	.field {
+		padding-top: 20px;
+	}
+
+	.label {
+		font-size: 11px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.input {
+		height: 38px;
+		font-size: 15px;
+		color: #1C1A16;
+		margin-top: 4px;
+	}
+
+	.input-line {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.tip {
+		font-size: 11px;
+		line-height: 17px;
+		color: #A9A292;
+		margin-top: 7px;
+	}
+
+	.duo {
+		flex-direction: row;
+		padding-top: 20px;
+	}
+
+	.duo-cell {
+		flex: 1;
+	}
+
+	.duo-gap {
+		width: 24px;
+	}
+
+	/* ---------- 操作 ---------- */
+	.test-row {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 28px;
+	}
+
+	.testbtn {
+		padding-left: 16px;
+		padding-right: 16px;
+		padding-top: 9px;
+		padding-bottom: 9px;
+		border-width: 1px;
+		border-style: solid;
+		border-color: #1C1A16;
+		border-radius: 3px;
+	}
+
+	.testbtn-t {
+		font-size: 12px;
+		letter-spacing: 1.5px;
+		color: #1C1A16;
+	}
+
+	.test-state {
+		flex: 1;
+		flex-direction: row;
+		align-items: center;
+		margin-left: 12px;
+	}
+
+	.dot {
+		width: 5px;
+		height: 5px;
+		border-radius: 3px;
+		margin-right: 6px;
+	}
+
+	.test-msg {
+		flex: 1;
+		font-size: 11.5px;
+		line-height: 16px;
+	}
+
+	.savebtn {
+		flex-direction: row;
+		margin-top: 16px;
+		padding-top: 14px;
+		padding-bottom: 14px;
+		background-color: #1C1A16;
+		border-radius: 3px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.savebtn-t {
+		font-size: 13px;
+		letter-spacing: 3px;
+		color: #F7F2E8;
+	}
+
+	.footer {
+		font-size: 11px;
+		line-height: 17px;
+		color: #B9B1A0;
+		margin-top: 14px;
+	}
+
+	.pad {
+		height: 28px;
+	}
+</style>

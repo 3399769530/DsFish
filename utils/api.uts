@@ -1,0 +1,954 @@
+/**
+ * 接口连通性测试
+ * 唯一会联网的地方：只在用户点「测试连接」时发一次 GET
+ */
+import { Profile, Msg, fmtCtxStamp } from './store.uts'
+import { relationOf } from './affinity.uts'
+
+export type TestResult = {
+	ok: boolean
+	message: string
+}
+
+function stripV1(base: string): string {
+	const idx = base.lastIndexOf('/v1')
+	if (idx >= 0 && idx == base.length - 3) {
+		return base.substring(0, idx)
+	}
+	return base
+}
+
+/** JSON 解析成对象；解析不动回 null */
+function parseObjOrNull(raw: string): UTSJSONObject | null {
+	try {
+		return JSON.parse<UTSJSONObject>(raw)
+	} catch (e) {
+		return null
+	}
+}
+
+function joinUrl(base: string, path: string): string {
+	let b = base.trim()
+	if (b.length == 0) {
+		return path
+	}
+	if (b.lastIndexOf('/') == b.length - 1) {
+		b = b.substring(0, b.length - 1)
+	}
+	return b + path
+}
+
+/** OpenAI 兼容走 /models；Ollama 走 /api/tags */
+export function testUrl(p: Profile): string {
+	if (p.provider == 'ollama') {
+		return joinUrl(stripV1(p.baseUrl.trim()), '/api/tags')
+	}
+	return joinUrl(p.baseUrl, '/models')
+}
+
+function hintFor(errMsg: string): string {
+	if (errMsg.indexOf('timeout') >= 0) {
+		return '连接超时，检查网络或接口地址'
+	}
+	if (errMsg.indexOf('abort') >= 0) {
+		return '请求被中断'
+	}
+	if (errMsg.indexOf('CORS') >= 0 || errMsg.indexOf('Failed to fetch') >= 0 || errMsg.indexOf('Network') >= 0) {
+		return '被浏览器拦了（CORS），请用 App 端测试'
+	}
+	return errMsg
+}
+
+export function testConnection(p: Profile, done: (r: TestResult) => void): void {
+	const header = new UTSJSONObject()
+	const key = p.apiKey.trim()
+	if (key.length > 0) {
+		header['Authorization'] = 'Bearer ' + key
+	}
+	uni.request({
+		url: testUrl(p),
+		method: 'GET',
+		header: header,
+		timeout: 20000,
+		success: (res) => {
+			const code = res.statusCode
+			if (code >= 200 && code < 300) {
+				done({ ok: true, message: '连接成功' } as TestResult)
+				return
+			}
+			if (code == 401 || code == 403) {
+				done({ ok: false, message: 'Key 无效或没有权限（' + code.toString() + '）' } as TestResult)
+				return
+			}
+			if (code == 404) {
+				done({ ok: false, message: '接口地址不对（404），检查地址末尾' } as TestResult)
+				return
+			}
+			done({ ok: false, message: '服务返回 ' + code.toString() } as TestResult)
+		},
+		fail: (err) => {
+			done({ ok: false, message: hintFor(err.errMsg) } as TestResult)
+		}
+	})
+}
+
+// ---------------- 对话 ----------------
+
+export type ChatMsg = {
+	role: string
+	/** 纯文本时是 string；带图片时是 OpenAI 多模态数组 */
+	content: any
+	/** assistant 要求调用工具时带上（原样回传协议要求的结构） */
+	toolCalls?: Array<UTSJSONObject>
+	/** role=tool 时，对应哪一次调用 */
+	toolCallId?: string
+}
+
+export type ChatResult = {
+	ok: boolean
+	text: string
+	error: string
+	aborted: boolean
+}
+
+/** 流式回调：边收边吐字 */
+export type StreamHandlers = {
+	onDelta: (piece: string) => void
+	onDone: (full: string, aborted: boolean) => void
+	onError: (message: string) => void
+	/** 结束原因：stop / length（被 max_tokens 截断）/ '' */
+	onFinish?: (reason: string) => void
+	/** 模型要求调用工具时走这里（不给就当普通回复处理） */
+	onToolCalls?: (calls: Array<UTSJSONObject>, text: string) => void
+}
+
+/** 流式里的一小片工具调用 */
+type ToolDelta = {
+	index: number
+	id: string
+	name: string
+	args: string
+}
+
+/** 从一条 JSON 里取出 delta.tool_calls / message.tool_calls 碎片 */
+function extractToolDeltas(payload: string): Array<ToolDelta> {
+	const out: Array<ToolDelta> = []
+	const obj = JSON.parse<UTSJSONObject>(payload)
+	if (obj == null) {
+		return out
+	}
+	const choices = obj!.getArray<UTSJSONObject>('choices')
+	if (choices == null || choices!.length == 0) {
+		return out
+	}
+	const c0 = choices![0]
+	let arr: Array<UTSJSONObject> | null = null
+	const d = c0.getJSON('delta')
+	if (d != null) {
+		arr = d!.getArray<UTSJSONObject>('tool_calls')
+	}
+	if (arr == null) {
+		const m = c0.getJSON('message')
+		if (m != null) {
+			arr = m!.getArray<UTSJSONObject>('tool_calls')
+		}
+	}
+	if (arr == null) {
+		return out
+	}
+	for (let i = 0; i < arr!.length; i++) {
+		const tc = arr![i]
+		let idx = i
+		const idxN = tc.getNumber('index')
+		if (idxN != null) {
+			idx = idxN!
+		}
+		const idv = tc.getString('id')
+		let nm = ''
+		let ag = ''
+		const fn = tc.getJSON('function')
+		if (fn != null) {
+			const nv = fn!.getString('name')
+			if (nv != null) {
+				nm = nv!
+			}
+			const av = fn!.getString('arguments')
+			if (av != null) {
+				ag = av!
+			}
+		}
+		out.push({
+			index: idx,
+			id: idv != null ? idv! : '',
+			name: nm,
+			args: ag
+		} as ToolDelta)
+	}
+	return out
+}
+
+type ResMsg = {
+	content: string
+}
+
+type ResChoice = {
+	message: ResMsg
+}
+
+type ResBody = {
+	choices: Array<ResChoice>
+}
+
+let activeTask: RequestTask | null = null
+let aborted: boolean = false
+let sseBuffer: string = ''
+
+export function isRequesting(): boolean {
+	return activeTask != null
+}
+
+export function abortChat(): void {
+	aborted = true
+	if (activeTask != null) {
+		activeTask!.abort()
+		activeTask = null
+	}
+}
+
+function shortText(s: string, n: number): string {
+	if (s.length <= n) {
+		return s
+	}
+	return s.substring(0, n) + '…'
+}
+
+export function chatUrl(p: Profile): string {
+	return joinUrl(p.baseUrl, '/chat/completions')
+}
+
+// ---------------- DSML 正文形态工具调用兜底 ----------------
+// 部分 DeepSeek 新模型（flash/v4）会把工具调用以 DSML 标记直接吐进正文，
+// API 没有解析成结构化 tool_calls（官方已知问题）。这里本地识别：
+// 流式时从标记处扣住不显示，收尾时把 invoke/parameter 解析成本地工具调用。
+
+const DSML_M: string = '<\uff5cDSML\uff5c'
+
+/** 统一成全角竖线变体，后面只处理一种 */
+function normDsml(text: string): string {
+	return text.split('|DSML|').join('\uff5cDSML\uff5c')
+}
+
+/** 正文里第一个「确定是 DSML 标记」或「可能是没吐完的半个标记」的位置；没有回 -1 */
+function dsmlHoldPoint(text: string): number {
+	const t = normDsml(text)
+	const at = t.indexOf(DSML_M)
+	if (at >= 0) {
+		return at
+	}
+	// 结尾可能是半截标记（如 "<\uff5cDS"），先藏起来
+	const maxBack = DSML_M.length - 1
+	let i = t.length - 1
+	const floor = t.length - maxBack
+	while (i >= 0 && i >= floor) {
+		if (t.substring(i, i + 1) == '<') {
+			const tail = t.substring(i, t.length)
+			if (DSML_M.indexOf(tail) == 0) {
+				return i
+			}
+		}
+		i--
+	}
+	return -1
+}
+
+/** 把正文里的 DSML invoke 解析成 {name, arguments} 列表 */
+function parseDsmlInvokes(text: string): Array<UTSJSONObject> {
+	const out: Array<UTSJSONObject> = []
+	const t = normDsml(text)
+	const invOpen = DSML_M + 'invoke'
+	const invClose = '</\uff5cDSML\uff5cinvoke>'
+	const parOpen = DSML_M + 'parameter'
+	const parClose = '</\uff5cDSML\uff5cparameter>'
+	let pos = 0
+	while (pos < t.length) {
+		const a = t.indexOf(invOpen, pos)
+		if (a < 0) {
+			break
+		}
+		const nameAt = t.indexOf('name="', a)
+		const nameEnd = nameAt >= 0 ? t.indexOf('"', nameAt + 6) : -1
+		const b = t.indexOf(invClose, a)
+		if (nameAt < 0 || nameEnd < 0 || b < 0) {
+			break
+		}
+		const fname = t.substring(nameAt + 6, nameEnd)
+		const inner = t.substring(nameEnd, b)
+		const argsObj = new UTSJSONObject()
+		let pp = 0
+		while (pp < inner.length) {
+			const pa = inner.indexOf(parOpen, pp)
+			if (pa < 0) {
+				break
+			}
+			const pnameAt = inner.indexOf('name="', pa)
+			const pnameEnd = pnameAt >= 0 ? inner.indexOf('"', pnameAt + 6) : -1
+			const gt = inner.indexOf('>', pa)
+			const pc = inner.indexOf(parClose, pa)
+			if (pnameAt < 0 || pnameEnd < 0 || gt < 0 || pc < 0 || pc < gt) {
+				break
+			}
+			const pname = inner.substring(pnameAt + 6, pnameEnd)
+			let val = inner.substring(gt + 1, pc)
+			const strAt = inner.indexOf('string="true"', pa)
+			if (strAt < 0 || strAt > gt) {
+				val = val.trim()
+			}
+			argsObj[pname] = val
+			pp = pc + parClose.length
+		}
+		const item = new UTSJSONObject()
+		item['name'] = fname
+		item['arguments'] = JSON.stringify(argsObj)
+		out.push(item)
+		pos = b + invClose.length
+	}
+	return out
+}
+
+/** 从非流式整包里取 tool_calls（有的服务商忽略 stream:true 直接回完整 JSON） */
+function extractWholeToolCalls(data: any): Array<ToolDelta> {
+	const out: Array<ToolDelta> = []
+	const raw = JSON.stringify(data)
+	if (raw.length == 0) {
+		return out
+	}
+	const obj = parseObjOrNull(raw)
+	if (obj == null) {
+		return out
+	}
+	const choices = obj!.getArray<UTSJSONObject>('choices')
+	if (choices == null || choices!.length == 0) {
+		return out
+	}
+	const msg = choices![0].getJSON('message')
+	if (msg == null) {
+		return out
+	}
+	const arr = msg!.getArray<UTSJSONObject>('tool_calls')
+	if (arr == null) {
+		return out
+	}
+	for (let i = 0; i < arr!.length; i++) {
+		const tc = arr![i]
+		const idv = tc.getString('id')
+		let nm = ''
+		let ag = ''
+		const fn = tc.getJSON('function')
+		if (fn != null) {
+			const nv = fn!.getString('name')
+			if (nv != null) {
+				nm = nv!
+			}
+			const av = fn!.getString('arguments')
+			if (av != null) {
+				ag = av!
+			}
+		}
+		out.push({ index: i, id: idv != null ? idv! : '', name: nm, args: ag } as ToolDelta)
+	}
+	return out
+}
+
+/** 取一个对象里的正文（content 可能是字符串，也可能是多模态片段数组） */
+function pickContent(o: UTSJSONObject): string {
+	const s = o.getString('content')
+	if (s != null) {
+		return s!
+	}
+	const parts = o.getArray<UTSJSONObject>('content')
+	if (parts != null && parts!.length > 0) {
+		let out = ''
+		for (let i = 0; i < parts!.length; i++) {
+			const piece = parts![i].getString('text')
+			if (piece != null) {
+				out += piece!
+			}
+		}
+		return out
+	}
+	return ''
+}
+
+/** 取思考内容（推理模型会有 reasoning_content / reasoning） */
+function extractReasoning(payload: string): string {
+	const obj = JSON.parse<UTSJSONObject>(payload)
+	if (obj == null) {
+		return ''
+	}
+	const choices = obj!.getArray<UTSJSONObject>('choices')
+	if (choices != null && choices!.length > 0) {
+		const d = choices![0].getJSON('delta')
+		if (d != null) {
+			const r = d!.getString('reasoning_content')
+			if (r != null && r!.length > 0) {
+				return r!
+			}
+			const r2 = d!.getString('reasoning')
+			if (r2 != null && r2!.length > 0) {
+				return r2!
+			}
+		}
+	}
+	return ''
+}
+
+/** 取 finish_reason */
+function extractFinish(payload: string): string {
+	const obj = JSON.parse<UTSJSONObject>(payload)
+	if (obj == null) {
+		return ''
+	}
+	const choices = obj!.getArray<UTSJSONObject>('choices')
+	if (choices != null && choices!.length > 0) {
+		const f = choices![0].getString('finish_reason')
+		if (f != null) {
+			return f!
+		}
+	}
+	return ''
+}
+
+/** 从一条 JSON（SSE 的 data: 或 NDJSON 行）里取出增量文本 */
+function extractDelta(payload: string): string {
+	const obj = JSON.parse<UTSJSONObject>(payload)
+	if (obj == null) {
+		return ''
+	}
+	const choices = obj!.getArray<UTSJSONObject>('choices')
+	if (choices != null && choices!.length > 0) {
+		const c0 = choices![0]
+		const d = c0.getJSON('delta')
+		if (d != null) {
+			const s = pickContent(d!)
+			if (s.length > 0) {
+				return s
+			}
+		}
+		const m = c0.getJSON('message')
+		if (m != null) {
+			const s = pickContent(m!)
+			if (s.length > 0) {
+				return s
+			}
+		}
+		const t = c0.getString('text')
+		if (t != null && t!.length > 0) {
+			return t!
+		}
+		return ''
+	}
+	// Ollama 原生格式 /api/chat、/api/generate
+	const om = obj!.getJSON('message')
+	if (om != null) {
+		const s = pickContent(om!)
+		if (s.length > 0) {
+			return s
+		}
+	}
+	const r = obj!.getString('response')
+	if (r != null) {
+		return r!
+	}
+	return ''
+}
+
+/** 平台不支持 chunked 时，从整包响应里取文本 */
+function extractWhole(data: any): string {
+	const raw = JSON.stringify(data)
+	if (raw.length == 0) {
+		return ''
+	}
+	try {
+		const parsed = JSON.parse<ResBody>(raw)
+		if (parsed == null) {
+			return ''
+		}
+		const choices = parsed!.choices
+		if (choices.length == 0) {
+			return ''
+		}
+		return choices[0].message.content
+	} catch (e) {
+		// 流式响应整包不是一个 JSON，正常现象
+		return ''
+	}
+}
+
+function errorFrom(data: any, code: number): string {
+	if (code == 401 || code == 403) {
+		return 'Key 无效或没有权限（' + code.toString() + '）'
+	}
+	const raw = JSON.stringify(data)
+	const obj = parseObjOrNull(raw)
+	if (obj != null) {
+		const err = obj!.getJSON('error')
+		if (err != null) {
+			const m = err!.getString('message')
+			if (m != null && m!.length > 0) {
+				return 'HTTP ' + code.toString() + '：' + shortText(m!, 90)
+			}
+		}
+	}
+	return 'HTTP ' + code.toString() + '：' + shortText(raw, 90)
+}
+
+/**
+ * 流式对话：enableChunked + onChunkReceived 边收边解析 SSE
+ * 平台不支持时自动退化成整包返回（onDelta 一次性给全文）
+ */
+export function streamChat(p: Profile, msgs: Array<ChatMsg>, h: StreamHandlers,
+	tools: Array<UTSJSONObject> | null = null, forceTool: string = ''): void {
+	aborted = false
+	sseBuffer = ''
+	let full = ''
+	// 已转发给界面显示的正文长度（DSML 标记之后的内容不显示）
+	let shownFwd: number = 0
+
+	const header = new UTSJSONObject()
+	const key = p.apiKey.trim()
+	if (key.length > 0) {
+		header['Authorization'] = 'Bearer ' + key
+	}
+	header['Content-Type'] = 'application/json'
+
+	const body = new UTSJSONObject()
+	body['model'] = p.model
+	body['temperature'] = p.temperature
+	body['max_tokens'] = p.maxTokens
+	body['stream'] = true
+	const arr: Array<UTSJSONObject> = []
+	for (let i = 0; i < msgs.length; i++) {
+		const o = new UTSJSONObject()
+		o['role'] = msgs[i].role
+		o['content'] = msgs[i].content
+		const tc = msgs[i].toolCalls
+		if (tc != null && tc!.length > 0) {
+			o['tool_calls'] = tc!
+		}
+		const tid = msgs[i].toolCallId
+		if (tid != null && tid!.length > 0) {
+			o['tool_call_id'] = tid!
+		}
+		arr.push(o)
+	}
+	body['messages'] = arr
+	// 带工具时固定附上；不带就完全不出现这个字段（有的服务商见到空数组会报错）
+	if (tools != null && tools!.length > 0) {
+		body['tools'] = tools!
+	}
+	// 用户点名「记一下/来着」这类消息：强制模型必须调指定工具，不许口头假装
+	if (tools != null && tools!.length > 0 && forceTool.length > 0) {
+		const tc = new UTSJSONObject()
+		tc['type'] = 'function'
+		const tf = new UTSJSONObject()
+		tf['name'] = forceTool
+		tc['function'] = tf
+		body['tool_choice'] = tc
+	}
+
+	let finished = false
+	let idleTimer: number = -1
+	let lastChunkAt = Date.now()
+	let reasoningChars = 0
+	let finishReason = ''
+	// 工具调用碎片：按 index 累积 id / 函数名 / 参数字符串
+	const tcIds: Array<string> = []
+	const tcNames: Array<string> = []
+	const tcArgs: Array<string> = []
+
+	const stopIdle = () => {
+		if (idleTimer >= 0) {
+			clearInterval(idleTimer)
+			idleTimer = -1
+		}
+	}
+	/** 拼出完整的 tool_calls（没有可用调用就返回空数组） */
+	const buildToolCalls = (): Array<UTSJSONObject> => {
+		const out: Array<UTSJSONObject> = []
+		for (let i = 0; i < tcNames.length; i++) {
+			if (tcNames[i].length == 0) {
+				continue
+			}
+			const o = new UTSJSONObject()
+			o['id'] = tcIds[i].length > 0 ? tcIds[i] : ('call_' + i.toString())
+			o['type'] = 'function'
+			const f = new UTSJSONObject()
+			f['name'] = tcNames[i]
+			f['arguments'] = tcArgs[i].length > 0 ? tcArgs[i] : '{}'
+			o['function'] = f
+			out.push(o)
+		}
+		return out
+	}
+	/** 结构化里没有、但正文里藏着 DSML 工具调用：解析进 tc 数组，返回剥掉标记后的正文 */
+	const absorbDsml = (text: string): string => {
+		if (buildToolCalls().length > 0) {
+			return text
+		}
+		const invs = parseDsmlInvokes(text)
+		if (invs.length == 0) {
+			return text
+		}
+		for (let di = 0; di < invs.length; di++) {
+			const nm = invs[di].getString('name')
+			const ag = invs[di].getString('arguments')
+			tcIds.push('dsml_' + di.toString())
+			tcNames.push(nm != null ? nm! : '')
+			tcArgs.push(ag != null ? ag! : '{}')
+		}
+		const hp = dsmlHoldPoint(text)
+		return hp >= 0 ? text.substring(0, hp) : text
+	}
+	const finish = (text: string, wasAborted: boolean) => {
+		if (finished) {
+			return
+		}
+		finished = true
+		stopIdle()
+		const fh = h.onFinish
+		if (fh != null) {
+			fh!(finishReason)
+		}
+		const clean = absorbDsml(text)
+		const calls = buildToolCalls()
+		const th = h.onToolCalls
+		if (!wasAborted && calls.length > 0 && th != null) {
+			th!(calls, clean)
+			return
+		}
+		h.onDone(clean, wasAborted)
+	}
+
+	const task = uni.request({
+		url: chatUrl(p),
+		method: 'POST',
+		header: header,
+		data: body,
+		timeout: 120000,
+		enableChunked: true,
+		responseType: 'text',
+		dataType: 'text',
+		success: (res) => {
+			activeTask = null
+			stopIdle()
+			if (aborted) {
+				finish(full, true)
+				return
+			}
+			const payload: any = res.data != null ? res.data! : ''
+			if (res.statusCode >= 400) {
+				h.onError(errorFrom(payload, res.statusCode))
+				return
+			}
+			if (full.length == 0) {
+				const whole = extractWhole(payload)
+				// 服务商可能根本没走流式：整包里的 tool_calls 也要认
+				if (buildToolCalls().length == 0) {
+					const wholeCalls = extractWholeToolCalls(payload)
+					for (let wi = 0; wi < wholeCalls.length; wi++) {
+						const wc = wholeCalls[wi]
+						while (tcIds.length <= wc.index) {
+							tcIds.push('')
+							tcNames.push('')
+							tcArgs.push('')
+						}
+						tcIds[wc.index] = wc.id
+						tcNames[wc.index] = wc.name
+						tcArgs[wc.index] = wc.args
+					}
+				}
+				// 工具调用可能没有任何正文：这种情况不能当成「返回内容是空的」
+				if (whole.length == 0 && buildToolCalls().length == 0) {
+					finished = true
+					if (reasoningChars > 0) {
+						h.onError('模型只输出了思考内容（thinking），没有正式回答：把「最大输出」调大，或关掉模型的思考模式')
+					} else {
+						h.onError('返回内容是空的')
+					}
+					return
+				}
+				if (whole.length > 0) {
+					full = whole
+					const hp2 = dsmlHoldPoint(full)
+					const upTo2 = hp2 >= 0 ? hp2 : full.length
+					if (upTo2 > shownFwd) {
+						h.onDelta(full.substring(shownFwd, upTo2))
+						shownFwd = upTo2
+					}
+				}
+			}
+			finish(full, false)
+		},
+		fail: (err) => {
+			activeTask = null
+			stopIdle()
+			if (aborted) {
+				finish(full, true)
+				return
+			}
+			// 已经收到一部分内容就当成正常结束，别把半截丢掉
+			if (full.length > 0) {
+				finish(full, false)
+				return
+			}
+			if (finished) {
+				return
+			}
+			finished = true
+			h.onError(hintFor(err.errMsg))
+		},
+		complete: () => {
+			stopIdle()
+		}
+	})
+	activeTask = task
+
+	// 兜底：本地模型有时不回 [DONE] 也不关连接，靠空闲超时收尾
+	idleTimer = setInterval(() => {
+		if (finished) {
+			return
+		}
+		if (Date.now() - lastChunkAt < 45000) {
+			return
+		}
+		stopIdle()
+		if (full.length > 0) {
+			finished = true
+			const hp3 = dsmlHoldPoint(full)
+			h.onDone(hp3 >= 0 ? full.substring(0, hp3) : full, true)
+			return
+		}
+		finished = true
+		h.onError('等了 45 秒没有收到任何内容：模型可能没启动，或接口地址/模型名不对')
+	}, 3000)
+
+	task.onChunkReceived((res) => {
+		if (finished) {
+			return
+		}
+		lastChunkAt = Date.now()
+		const text = new TextDecoder('utf-8').decode(res.data)
+		sseBuffer += text
+		let idx = sseBuffer.indexOf('\n')
+		while (idx >= 0) {
+			const rawLine = sseBuffer.substring(0, idx)
+			sseBuffer = sseBuffer.substring(idx + 1)
+			const line = rawLine.trim()
+			let payload = ''
+			if (line.startsWith('data:')) {
+				payload = line.substring(5).trim()
+			} else if (line.startsWith('{')) {
+				// 有的本地服务走 NDJSON（不带 data: 前缀）
+				payload = line
+			}
+			if (payload.length > 0 && payload != '[DONE]') {
+				const piece = extractDelta(payload)
+				if (piece.length > 0) {
+					full += piece
+					// DSML 标记之后的内容不往界面转发（防标签漏显）
+					const hp = dsmlHoldPoint(full)
+					const upTo = hp >= 0 ? hp : full.length
+					if (upTo > shownFwd) {
+						h.onDelta(full.substring(shownFwd, upTo))
+						shownFwd = upTo
+					}
+				}
+				const think = extractReasoning(payload)
+				if (think.length > 0) {
+					reasoningChars += think.length
+				}
+				const fr = extractFinish(payload)
+				if (fr.length > 0) {
+					finishReason = fr
+				}
+				// 工具调用是碎片化的：按 index 把 id / 名字 / 参数字符串拼起来
+				const tds = extractToolDeltas(payload)
+				for (let ti = 0; ti < tds.length; ti++) {
+					const td = tds[ti]
+					while (tcIds.length <= td.index) {
+						tcIds.push('')
+						tcNames.push('')
+						tcArgs.push('')
+					}
+					if (td.id.length > 0) {
+						tcIds[td.index] = td.id
+					}
+					if (td.name.length > 0) {
+						tcNames[td.index] = td.name
+					}
+					if (td.args.length > 0) {
+						tcArgs[td.index] = tcArgs[td.index] + td.args
+					}
+				}
+			}
+			idx = sseBuffer.indexOf('\n')
+		}
+	})
+}
+
+
+/** 非流式的一次性调用（用于压缩摘要） */
+export function simpleChat(p: Profile, msgs: Array<ChatMsg>, done: (ok: boolean, text: string) => void): void {
+	const header = new UTSJSONObject()
+	const key = p.apiKey.trim()
+	if (key.length > 0) {
+		header['Authorization'] = 'Bearer ' + key
+	}
+	header['Content-Type'] = 'application/json'
+
+	const body = new UTSJSONObject()
+	body['model'] = p.model
+	body['temperature'] = 0.3
+	body['max_tokens'] = 512
+	body['stream'] = false
+	const arr: Array<UTSJSONObject> = []
+	for (let i = 0; i < msgs.length; i++) {
+		const o = new UTSJSONObject()
+		o['role'] = msgs[i].role
+		const c = msgs[i].content
+		if (typeof c == 'string') {
+			o['content'] = c
+		} else {
+			o['content'] = JSON.stringify(c)
+		}
+		arr.push(o)
+	}
+	body['messages'] = arr
+
+	uni.request({
+		url: chatUrl(p),
+		method: 'POST',
+		header: header,
+		data: body,
+		timeout: 120000,
+		success: (res) => {
+			const payload: any = res.data != null ? res.data! : ''
+			if (res.statusCode >= 400) {
+				done(false, '')
+				return
+			}
+			const raw = JSON.stringify(payload)
+			const parsed = JSON.parse<ResBody>(raw)
+			if (parsed == null || parsed!.choices.length == 0) {
+				done(false, '')
+				return
+			}
+			done(true, parsed!.choices[0].message.content)
+		},
+		fail: (err) => {
+			done(false, '')
+		}
+	})
+}
+
+/** 把一段旧对话压缩成记忆 */
+export function summarize(p: Profile, prevSummary: string, old: Array<Msg>, done: (ok: boolean, text: string) => void): void {
+	let body = ''
+	if (prevSummary.length > 0) {
+		body += '【已有记忆】\n' + prevSummary + '\n\n'
+	}
+	body += '【需要并入的新对话】\n'
+	for (let i = 0; i < old.length; i++) {
+		const m = old[i]
+		const who = m.mine ? '用户' : '角色'
+		const what = m.text.length > 0 ? m.text : '[图片]'
+		body += who + '：' + what + '\n'
+	}
+
+	const sys: ChatMsg = {
+		role: 'system',
+		content: '你是对话记忆整理器。把用户给的对话压缩成一段简洁的记忆（400 字以内），' +
+			'只保留：人物关系、用户的重要信息（称呼/偏好/经历）、发生过的重要事件、情绪与关系的变化。' +
+			'只输出记忆正文，不要解释、不要加标题、不要用列表。'
+	} as ChatMsg
+	const usr: ChatMsg = { role: 'user', content: body } as ChatMsg
+	const list: Array<ChatMsg> = [sys, usr]
+	simpleChat(p, list, done)
+}
+/** 用户消息开头的 <系统消息> 块：时间 / 好感度 / 昵称 */
+function metaBlock(ts: number, withTime: boolean, withAffinity: boolean, affinity: number, userName: string): string {
+	let line = ''
+	if (withTime) {
+		line += '[当前时间: ' + fmtCtxStamp(ts) + ']'
+	}
+	if (withAffinity) {
+		line += '[当前好感度: ' + affinity.toString() + '  ' + relationOf(affinity) + ']'
+	}
+	const un = userName.trim()
+	if (un.length > 0) {
+		line += '[用户昵称: ' + un + ']'
+	}
+	if (line.length == 0) {
+		return ''
+	}
+	return '<系统消息>\n' + line + '\n</系统消息>\n'
+}
+
+/**
+ * 把本地消息 + 角色人设拼成请求体
+ * 用户这边每条消息前面都挂一段 <系统消息>；AI 回复保持原文不动
+ * withAffinity 为 false 或 affinity < 0 时不带好感度
+ */
+export function buildRequest(profile: string, msgs: Array<Msg>, withTime: boolean,
+	withAffinity: boolean, affinity: number, userName: string): Array<ChatMsg> {
+	const out: Array<ChatMsg> = []
+	if (profile.trim().length > 0) {
+		out.push({ role: 'system', content: profile } as ChatMsg)
+	}
+	const affOn = withAffinity && affinity >= 0
+	for (let i = 0; i < msgs.length; i++) {
+		const m = msgs[i]
+		const hasImg = m.image != null && m.image!.length > 0
+		const dataUrl = m.imageData != null ? m.imageData! : ''
+		// 好感度按这条消息发出时的快照显示（老消息没快照就退回当前值；快照 -1 表示当时关着）
+		const affV = m.aff != null ? m.aff! : affinity
+		const msgAffOn = affOn && affV >= 0
+		// 只有用户这边（含骰子旁白）挂系统信息块
+		const stamp = m.mine ? metaBlock(m.time, withTime, msgAffOn, affV, userName) : ''
+
+		if (hasImg && dataUrl.length > 0) {
+			// 真·多模态：text + image_url
+			const parts: Array<UTSJSONObject> = []
+			if (m.text.length > 0 || stamp.length > 0) {
+				const t1 = new UTSJSONObject()
+				t1['type'] = 'text'
+				t1['text'] = stamp + m.text
+				parts.push(t1)
+			}
+			const img = new UTSJSONObject()
+			img['url'] = dataUrl
+			const t2 = new UTSJSONObject()
+			t2['type'] = 'image_url'
+			t2['image_url'] = img
+			parts.push(t2)
+			out.push({ role: m.mine ? 'user' : 'assistant', content: parts } as ChatMsg)
+			continue
+		}
+
+		let content = m.text
+		if (hasImg) {
+			// 拿不到 base64 时才退回文字占位
+			if (content.length == 0) {
+				content = '[图片]'
+			} else {
+				content = content + '\n[图片]'
+			}
+		}
+		out.push({
+			role: m.mine ? 'user' : 'assistant',
+			content: stamp + content
+		} as ChatMsg)
+	}
+	return out
+}
+

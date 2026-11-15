@@ -1,0 +1,144 @@
+/**
+ * 备份文件读写
+ * App 端 uni.getFileSystemManager() 从 3.9.0 起支持。
+ * 路径优先用 uni.env.USER_DATA_PATH（FileSystemManager 认的绝对路径），再用 _doc 前缀兜底。
+ */
+let lastErr: string = ''
+
+function userDataPath(): string {
+	try {
+		return uni.env.USER_DATA_PATH
+	} catch (e) {
+		return ''
+	}
+}
+
+/** 候选目录，按顺序尝试 */
+function candidateDirs(): Array<string> {
+	const out: Array<string> = []
+	const base = userDataPath()
+	if (base.length > 0) {
+		out.push(base + '/backup')
+		out.push(base)
+	}
+	out.push('_doc/backup')
+	out.push('_doc')
+	return out
+}
+
+export function backupLastError(): string {
+	return lastErr
+}
+
+function pad2(n: number): string {
+	return n < 10 ? '0' + n.toString() : n.toString()
+}
+
+/** 写一份备份文件，成功返回路径，失败返回空串（错误见 backupLastError） */
+export function saveBackupFile(text: string): string {
+	lastErr = ''
+	const dirs = candidateDirs()
+	const name = 'dsfish-' + (new Date()).getFullYear().toString() +
+		pad2((new Date()).getMonth() + 1) + pad2((new Date()).getDate()) + '-' +
+		pad2((new Date()).getHours()) + pad2((new Date()).getMinutes()) + pad2((new Date()).getSeconds()) + '.json'
+	for (let i = 0; i < dirs.length; i++) {
+		const dir = dirs[i]
+		try {
+			const fs = uni.getFileSystemManager()
+			try {
+				fs.mkdirSync(dir, true)
+			} catch (e1) {
+				// 目录已存在会抛，忽略
+			}
+			const path = dir + '/' + name
+			fs.writeFileSync(path, text, 'utf-8')
+			return path
+		} catch (e) {
+			const msg = e.toString()
+			lastErr = (lastErr.length > 0 ? lastErr + ' / ' : '') + shortDir(dir) + ': ' + msg
+		}
+	}
+	return ''
+}
+
+function shortDir(dir: string): string {
+	const base = userDataPath()
+	if (base.length > 0 && dir.indexOf(base) == 0) {
+		return dir.substring(base.length, dir.length)
+	}
+	return dir
+}
+
+/** 读一个备份文件的内容 */
+export function readBackupFile(path: string): string {
+	lastErr = ''
+	try {
+		const fs = uni.getFileSystemManager()
+		const data = fs.readFileSync(path, 'utf-8')
+		if (typeof data == 'string') {
+			return data as string
+		}
+		return ''
+	} catch (e) {
+		const msg = e.toString()
+		lastErr = msg
+		return ''
+	}
+}
+
+/** 系统文件选择器挑一个备份文件，返回路径（取消/失败返回空，原因见 backupLastError） */
+export function pickBackupFile(done: (path: string) => void): void {
+	lastErr = ''
+	try {
+		uni.chooseFile({
+			count: 1,
+			type: 'all',
+			success: (res) => {
+				console.log('chooseFile ok: ' + JSON.stringify(res))
+				let p = ''
+				const paths = res.tempFilePaths
+				if (paths.length > 0) {
+					p = paths[0]
+				}
+				// 个别平台只给 tempFiles[].path
+				if (p.length == 0) {
+					const raw = JSON.stringify(res)
+					try {
+						const obj = JSON.parse<UTSJSONObject>(raw)
+						if (obj != null) {
+							const files = obj!.getArray<UTSJSONObject>('tempFiles')
+							if (files != null && files!.length > 0) {
+								const fp = files![0].getString('path')
+								if (fp != null) {
+									p = fp!
+								}
+							}
+						}
+					} catch (e) {
+						// 忽略
+					}
+				}
+				if (p.length == 0) {
+					lastErr = '选择器没有返回文件路径'
+				}
+				done(p)
+			},
+			fail: (err) => {
+				const raw = JSON.stringify(err)
+				console.log('chooseFile fail: ' + raw)
+				lastErr = '选择文件失败'
+				done('')
+			}
+		})
+	} catch (e) {
+		console.log('chooseFile throw: ' + e.toString())
+		lastErr = '当前平台不支持文件选择'
+		done('')
+	}
+}
+
+/** 文件名（去掉目录） */
+export function fileNameOf(path: string): string {
+	const i = path.lastIndexOf('/')
+	return i >= 0 ? path.substring(i + 1) : path
+}

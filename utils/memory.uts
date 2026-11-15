@@ -1,0 +1,846 @@
+/**
+ * 跨会话长期记忆
+ * 模型通过标准工具调用（memory_add / memory_query / memory_remove）增删查，
+ * 内容全局共享，默认不进上下文，只有被查到时才喂给模型。
+ * 删除是软删，30 天后才真清，期间可以在「记忆管理」里还原。
+ */
+
+export type Memory = {
+	id: string
+	/** 正文，≤200 字 */
+	text: string
+	tags: Array<string>
+	createdAt: number
+	/** 最近一次被查询命中的时间，0 表示从没被用过 */
+	lastHitAt: number
+	/** 强度：新建 60，每次被引用会涨，上限 100（老数据没有这个字段时按 60 算） */
+	strength?: number
+	fromChatId: string
+	fromChatName: string
+	deleted?: boolean
+	deletedAt?: number
+}
+
+const KEY_MEM: string = 'dsfish_memory_v1'
+export const MEM_TEXT_MAX: number = 200
+export const MEM_TAG_MAX: number = 3
+/** 回收站保留天数 */
+export const MEM_KEEP_DAYS: number = 3
+/** 多久没被引用就自动进回收站 */
+export const MEM_FORGET_DAYS: number = 60
+/** 强度：新建默认 60 */
+export const MEM_STRENGTH_START: number = 60
+export const MEM_STRENGTH_MAX: number = 100
+/** 第一次被引用（强度还是 60）加 5，之后每次加 1 */
+const STRENGTH_FIRST_GAIN: number = 5
+const STRENGTH_STEP: number = 1
+/** 有效记忆条数上限：到顶后不再存新的，提示用户去清理 */
+export const MEM_LIMIT: number = 500
+const QUERY_TOP: number = 5
+const DAY_MS: number = 86400000
+
+// ---------------- 存储 ----------------
+
+/** 读原始存储；没有/读失败都回空串 */
+function readRawMem(): string {
+	try {
+		const v = uni.getStorageSync(KEY_MEM) as string | null
+		if (v != null) {
+			return v!
+		}
+	} catch (e) {
+		// 没存过
+	}
+	return ''
+}
+
+/** 脏数据解析：解析不动就回空数组 */
+function parseMemList(raw: string): Array<Memory> {
+	try {
+		const v = JSON.parse<Array<Memory>>(raw)
+		if (v != null) {
+			return v!
+		}
+	} catch (e) {
+		// 落空返回空数组
+	}
+	return [] as Array<Memory>
+}
+
+export function loadMemories(): Array<Memory> {
+	const out: Array<Memory> = []
+	const raw = readRawMem()
+	if (raw.length == 0) {
+		return out
+	}
+	// 存储可能被写坏（旧版本格式、手改、写入中断）：先看首字符，脏数据直接短路，
+	// 连 JSON.parse 都不调用（web 端它会在控制台刷红字；Android 端会真抛异常）
+	const head = raw.substring(0, 1)
+	if (head != '[') {
+		return out
+	}
+	const list = parseMemList(raw)
+	for (let i = 0; i < list.length; i++) {
+		const m = list[i]
+		// 再挡一层：缺 id 的记录直接丢掉（旧数据可能没这条字段）
+		if (m.id.length > 0) {
+			out.push(m)
+		}
+	}
+	return out
+}
+
+export function saveMemories(list: Array<Memory>): void {
+	try {
+		uni.setStorageSync(KEY_MEM, JSON.stringify(list))
+	} catch (e) {
+		// 存储写失败（空间满等）不该把聊天请求带崩，最多这一条没存上
+	}
+}
+
+function pad2(n: number): string {
+	return n < 10 ? ('0' + n.toString()) : n.toString()
+}
+
+/** 给模型看的日期：2026-11-08 */
+function dateStr(ts: number): string {
+	const d = new Date(ts)
+	return d.getFullYear().toString() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+}
+
+/** 给面板看的日期时间：2026-11-08 09:12 */
+function timeStr(ts: number): string {
+	const d = new Date(ts)
+	return dateStr(ts) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+}
+
+const ID_CHARS: string = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+function randSuffix(): string {
+	let s = ''
+	for (let i = 0; i < 4; i++) {
+		const n = Math.floor(Math.random() * ID_CHARS.length)
+		s += ID_CHARS.substring(n, n + 1)
+	}
+	return s
+}
+
+/** 毫秒时间戳 + 4 位随机后缀，避免同毫秒撞车 */
+export function newMemoryId(): string {
+	return Date.now().toString() + randSuffix()
+}
+
+// ---------------- 增 / 改 / 删 ----------------
+
+function cleanTags(tags: Array<string>): Array<string> {
+	const out: Array<string> = []
+	for (let i = 0; i < tags.length && out.length < MEM_TAG_MAX; i++) {
+		let g = tags[i].trim()
+		if (g.length == 0) {
+			continue
+		}
+		if (g.length > 12) {
+			g = g.substring(0, 12)
+		}
+		let dup = false
+		for (let j = 0; j < out.length; j++) {
+			if (out[j] == g) {
+				dup = true
+			}
+		}
+		if (!dup) {
+			out.push(g)
+		}
+	}
+	if (out.length == 0) {
+		out.push('其他')
+	}
+	return out
+}
+
+/** 把「偏好,工作 家人」这种文本拆成标签数组 */
+export function parseTags(text: string): Array<string> {
+	let s = text
+	const seps: Array<string> = [',', '，', '、', ';', '；', ' ', '\n', '\t']
+	for (let i = 0; i < seps.length; i++) {
+		s = s.split(seps[i]).join(' ')
+	}
+	const parts = s.split(' ')
+	const out: Array<string> = []
+	for (let i = 0; i < parts.length; i++) {
+		const t = parts[i].trim()
+		if (t.length > 0) {
+			out.push(t)
+		}
+	}
+	return out
+}
+
+/** 有效记忆条数上限已满？ */
+export function memIsFull(): boolean {
+	return countActiveMemories() >= MEM_LIMIT
+}
+
+function activeCountOf(list: Array<Memory>): number {
+	let n = 0
+	for (let i = 0; i < list.length; i++) {
+		const isDel = list[i].deleted != null && list[i].deleted!
+		if (!isDel) {
+			n++
+		}
+	}
+	return n
+}
+
+/** 强度（老数据没有这个字段时按默认 60 算） */
+export function strengthOf(m: Memory): number {
+	const s = m.strength
+	if (s == null) {
+		return MEM_STRENGTH_START
+	}
+	if (s! < 0) {
+		return 0
+	}
+	if (s! > MEM_STRENGTH_MAX) {
+		return MEM_STRENGTH_MAX
+	}
+	return s!
+}
+
+/** 强度到顶了没有（面板上打「极致」用） */
+export function strengthIsMax(m: Memory): boolean {
+	return strengthOf(m) >= MEM_STRENGTH_MAX
+}
+
+/** 强度对应的进度 0~1，给进度条用 */
+export function strengthRatio(m: Memory): number {
+	return strengthOf(m) * 1.0 / MEM_STRENGTH_MAX * 1.0
+}
+
+/**
+ * 自动忘却：超过 60 天没被引用的记忆自动进回收站
+ * 引用时间取 lastHitAt，没被引用过就用创建时间
+ */
+export function autoForget(): number {
+	const list = loadMemories()
+	const now = Date.now()
+	let n = 0
+	for (let i = 0; i < list.length; i++) {
+		const m = list[i]
+		const isDel = m.deleted != null && m.deleted!
+		if (isDel) {
+			continue
+		}
+		const lastHit = m.lastHitAt
+		const ref = lastHit > 0 ? lastHit : m.createdAt
+		if (now - ref > MEM_FORGET_DAYS * DAY_MS) {
+			m.deleted = true
+			m.deletedAt = now
+			n++
+		}
+	}
+	if (n > 0) {
+		saveMemories(list)
+	}
+	return n
+}
+
+/**
+ * 去掉空白和标点，只留下正文主体，给相似度用
+ */
+function normText(s: string): string {
+	const drop: Array<string> = [' ', '\t', '\n', '，', '。', '、', '；', '：', '！', '？',
+		'「', '」', '『', '』', '【', '】', '（', '）', '《', '》', '(', ')', '[', ']',
+		'"', '\'', ',', '.', '!', '?', ';', ':', '~', '·', '—', '－', '-', '…']
+	let out = ''
+	for (let i = 0; i < s.length; i++) {
+		const ch = s.substring(i, i + 1)
+		if (drop.indexOf(ch) < 0) {
+			out += ch
+		}
+	}
+	return out.toLowerCase()
+}
+
+/** 字符二元组：中文不用分词也能比较相似度 */
+function bigrams(s: string): Array<string> {
+	const n = normText(s)
+	const out: Array<string> = []
+	for (let i = 0; i + 1 < n.length; i++) {
+		out.push(n.substring(i, i + 2))
+	}
+	return out
+}
+
+function overlapCount(a: Array<string>, b: Array<string>): number {
+	let c = 0
+	for (let i = 0; i < a.length; i++) {
+		if (b.indexOf(a[i]) >= 0) {
+			c++
+		}
+	}
+	return c
+}
+
+/**
+ * 两条记忆是不是「同一件事」
+ * 1) 正文归一化后完全相同
+ * 2) 一条包含另一条，且短的那条够长（≥8 字）
+ * 3) 二元组重叠 ≥6 且 dice ≥0.35（模型换个说法也能认出来）
+ * 4) 二元组重叠 ≥4 且 dice ≥0.5（捕获更短的近似说法）
+ */
+export function isSameMemory(aText: string, bText: string): boolean {
+	const na = normText(aText)
+	const nb = normText(bText)
+	if (na.length == 0 || nb.length == 0) {
+		return na == nb
+	}
+	if (na == nb) {
+		return true
+	}
+	const shorter = Math.min(na.length, nb.length)
+	if (shorter >= 8 && (na.indexOf(nb) >= 0 || nb.indexOf(na) >= 0)) {
+		return true
+	}
+	const ga = bigrams(aText)
+	const gb = bigrams(bText)
+	if (ga.length == 0 || gb.length == 0) {
+		return false
+	}
+	const c = overlapCount(ga, gb)
+	const dice = c * 2.0 / (ga.length + gb.length)
+	const minLen = Math.min(ga.length, gb.length)
+	const contain = c * 1.0 / minLen
+	if (c >= 6 && dice >= 0.35) {
+		return true
+	}
+	if (c >= 4 && dice >= 0.5) {
+		return true
+	}
+	if (contain >= 0.9 && shorter >= 10) {
+		return true
+	}
+	return false
+}
+
+export type AddResult = {
+	mem: Memory
+	/** true 表示这条其实已经存在，这次只是合并了标签/补全了正文 */
+	duplicate: boolean
+	/** 这次调用有没有真的改动已有记录（完全一样时是 false，前端就不提示了） */
+	changed: boolean
+}
+
+function tagsKey(tags: Array<string>): string {
+	let s = ''
+	for (let i = 0; i < tags.length; i++) {
+		s += tags[i] + '|'
+	}
+	return s
+}
+
+function mergeMemory(old: Memory, text: string, tags: Array<string>): boolean {
+	const oldTags = tagsKey(old.tags)
+	const oldText = old.text
+	const merged: Array<string> = []
+	for (let i = 0; i < old.tags.length; i++) {
+		merged.push(old.tags[i])
+	}
+	for (let i = 0; i < tags.length; i++) {
+		merged.push(tags[i])
+	}
+	old.tags = cleanTags(merged)
+	// 新说法更详细时用新的，否则保留原文，避免反复改写把内容磨没
+	if (text.length > old.text.length) {
+		old.text = text
+	}
+	return tagsKey(old.tags) != oldTags || old.text != oldText
+}
+
+/** 存记忆（内部做近似去重），返回这条记录以及是不是重复 */
+export function addMemoryEx(text: string, tags: Array<string>, fromChatId: string, fromChatName: string): AddResult | null {
+	let t = text.trim()
+	if (t.length == 0) {
+		return null
+	}
+	if (t.length > MEM_TEXT_MAX) {
+		t = t.substring(0, MEM_TEXT_MAX)
+	}
+	const cleaned = cleanTags(tags)
+	const list = loadMemories()
+	// 已经存过这件事：合并标签后直接返回旧的（措辞不同也算同一条）
+	for (let i = 0; i < list.length; i++) {
+		const old = list[i]
+		const isDel = old.deleted != null && old.deleted!
+		if (isDel) {
+			continue
+		}
+		if (isSameMemory(old.text, t)) {
+			const changed = mergeMemory(old, t, cleaned)
+			if (changed) {
+				saveMemories(list)
+			}
+			return { mem: old, duplicate: true, changed: changed } as AddResult
+		}
+	}
+	// 到上限就不再存新的（去重仍然生效，避免同一句话反复挤占）
+	if (activeCountOf(list) >= MEM_LIMIT) {
+		return null
+	}
+	const now = Date.now()
+	const m = {
+		id: newMemoryId(),
+		text: t,
+		tags: cleaned,
+		createdAt: now,
+		lastHitAt: 0,
+		strength: MEM_STRENGTH_START,
+		fromChatId: fromChatId,
+		fromChatName: fromChatName
+	} as Memory
+	list.push(m)
+	saveMemories(list)
+	return { mem: m, duplicate: false, changed: true } as AddResult
+}
+
+export function addMemory(text: string, tags: Array<string>, fromChatId: string, fromChatName: string): Memory | null {
+	const r = addMemoryEx(text, tags, fromChatId, fromChatName)
+	if (r == null) {
+		return null
+	}
+	return r!.mem
+}
+
+export function updateMemory(id: string, text: string, tags: Array<string>): boolean {
+	const list = loadMemories()
+	let t = text.trim()
+	if (t.length == 0) {
+		return false
+	}
+	if (t.length > MEM_TEXT_MAX) {
+		t = t.substring(0, MEM_TEXT_MAX)
+	}
+	let ok = false
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == id) {
+			list[i].text = t
+			list[i].tags = cleanTags(tags)
+			ok = true
+		}
+	}
+	if (ok) {
+		saveMemories(list)
+	}
+	return ok
+}
+
+/** 软删：只打标记，30 天后才真清 */
+export function removeMemory(id: string): boolean {
+	const list = loadMemories()
+	let ok = false
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == id && !(list[i].deleted != null && list[i].deleted!)) {
+			list[i].deleted = true
+			list[i].deletedAt = Date.now()
+			ok = true
+		}
+	}
+	if (ok) {
+		saveMemories(list)
+	}
+	return ok
+}
+
+export function restoreMemory(id: string): boolean {
+	const list = loadMemories()
+	let ok = false
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == id && (list[i].deleted != null && list[i].deleted!)) {
+			list[i].deleted = false
+			list[i].deletedAt = 0
+			ok = true
+		}
+	}
+	if (ok) {
+		saveMemories(list)
+	}
+	return ok
+}
+
+/** 真删：回收站里超过 30 天的 */
+export function purgeDeleted(): number {
+	const list = loadMemories()
+	const kept: Array<Memory> = []
+	const now = Date.now()
+	let removed = 0
+	for (let i = 0; i < list.length; i++) {
+		const m = list[i]
+		const isDel = m.deleted != null && m.deleted!
+		if (isDel) {
+			const at = m.deletedAt != null ? m.deletedAt! : 0
+			// 老数据没有删除时间：把现在当作起点，避免永远清不掉
+			if (at <= 0) {
+				m.deletedAt = now
+				kept.push(m)
+				continue
+			}
+			if (now - at > MEM_KEEP_DAYS * DAY_MS) {
+				removed++
+				continue
+			}
+		}
+		kept.push(m)
+	}
+	if (removed > 0) {
+		saveMemories(kept)
+	}
+	return removed
+}
+
+/** 清空全部（含回收站），面板上的「清空记忆」用 */
+export function clearAllMemories(): void {
+	uni.removeStorageSync(KEY_MEM)
+}
+
+// ---------------- 查询打分 ----------------
+
+function splitTerms(q: string): Array<string> {
+	let s = q
+	const seps: Array<string> = [',', '，', '、', ';', '；', '\n', '\t', ' ', '。', '？', '?', '!', '！']
+	for (let i = 0; i < seps.length; i++) {
+		s = s.split(seps[i]).join(' ')
+	}
+	const parts = s.split(' ')
+	const out: Array<string> = []
+	for (let i = 0; i < parts.length; i++) {
+		const t = parts[i].trim()
+		if (t.length == 0) {
+			continue
+		}
+		let dup = false
+		for (let j = 0; j < out.length; j++) {
+			if (out[j] == t) {
+				dup = true
+			}
+		}
+		if (!dup) {
+			out.push(t)
+		}
+	}
+	return out
+}
+
+/** 标签命中每个 +3（同一标签只算一次），正文命中任意词 +1（不按次数） */
+function scoreOf(m: Memory, terms: Array<string>): number {
+	let score = 0
+	for (let i = 0; i < m.tags.length; i++) {
+		const tag = m.tags[i]
+		let hit = false
+		for (let j = 0; j < terms.length; j++) {
+			const t = terms[j]
+			if (tag.indexOf(t) >= 0 || t.indexOf(tag) >= 0) {
+				hit = true
+			}
+		}
+		if (hit) {
+			score += 3
+		}
+	}
+	for (let j = 0; j < terms.length; j++) {
+		if (m.text.indexOf(terms[j]) >= 0) {
+			score += 1
+			break
+		}
+	}
+	return score
+}
+
+/** 查记忆：打分排序取前 5，同分新的优先；命中会更新 lastHitAt */
+export function queryMemories(q: string): Array<Memory> {
+	const terms = splitTerms(q)
+	const list = loadMemories()
+	const hits: Array<Memory> = []
+	const scores: Array<number> = []
+	for (let i = 0; i < list.length; i++) {
+		const m = list[i]
+		if (m.deleted != null && m.deleted!) {
+			continue
+		}
+		const s = terms.length > 0 ? scoreOf(m, terms) : 0
+		if (s <= 0) {
+			continue
+		}
+		hits.push(m)
+		scores.push(s)
+	}
+	// 分数降序，同分按创建时间新的在前
+	for (let i = 1; i < hits.length; i++) {
+		const mv = hits[i]
+		const sv = scores[i]
+		let j = i - 1
+		while (j >= 0 && (scores[j] < sv || (scores[j] == sv && hits[j].createdAt < mv.createdAt))) {
+			hits[j + 1] = hits[j]
+			scores[j + 1] = scores[j]
+			j--
+		}
+		hits[j + 1] = mv
+		scores[j + 1] = sv
+	}
+	const out: Array<Memory> = []
+	const now = Date.now()
+	for (let i = 0; i < hits.length && i < QUERY_TOP; i++) {
+		const m = hits[i]
+		// 强度：第一次被引用（还是默认 60）加 5，之后每次加 1，封顶 100
+		const cur = strengthOf(m)
+		const gain = cur == MEM_STRENGTH_START ? STRENGTH_FIRST_GAIN : STRENGTH_STEP
+		let next = cur + gain
+		if (next > MEM_STRENGTH_MAX) {
+			next = MEM_STRENGTH_MAX
+		}
+		m.strength = next
+		m.lastHitAt = now
+		out.push(m)
+	}
+	if (out.length > 0) {
+		// hits 里的对象就是 list 里的对象，改完直接存回去
+		saveMemories(list)
+	}
+	return out
+}
+
+// ---------------- 列表 / 统计 ----------------
+
+/** 有效记忆，按创建时间倒序 */
+export function listActiveMemories(): Array<Memory> {
+	return listByDeleted(false)
+}
+
+/** 回收站，按删除时间倒序 */
+export function listDeletedMemories(): Array<Memory> {
+	return listByDeleted(true)
+}
+
+function listByDeleted(deleted: boolean): Array<Memory> {
+	const list = loadMemories()
+	const out: Array<Memory> = []
+	for (let i = 0; i < list.length; i++) {
+		const isDel = list[i].deleted != null && list[i].deleted!
+		if (isDel == deleted) {
+			out.push(list[i])
+		}
+	}
+	for (let i = 1; i < out.length; i++) {
+		const m = out[i]
+		const t = deleted ? (m.deletedAt != null ? m.deletedAt! : 0) : m.createdAt
+		let j = i - 1
+		while (j >= 0) {
+			const pv = deleted ? (out[j].deletedAt != null ? out[j].deletedAt! : 0) : out[j].createdAt
+			if (pv < t) {
+				out[j + 1] = out[j]
+				j--
+			} else {
+				break
+			}
+		}
+		out[j + 1] = m
+	}
+	return out
+}
+
+export function countActiveMemories(): number {
+	return listByDeleted(false).length
+}
+
+export function countDeletedMemories(): number {
+	return listByDeleted(true).length
+}
+
+/** 回收站里还能保留几天 */
+export function keepDaysLeft(m: Memory): number {
+	const at = m.deletedAt != null ? m.deletedAt! : 0
+	if (at <= 0) {
+		return MEM_KEEP_DAYS
+	}
+	const left = MEM_KEEP_DAYS - Math.floor((Date.now() - at) / DAY_MS)
+	return left < 0 ? 0 : left
+}
+
+export function memCreatedLabel(m: Memory): string {
+	return timeStr(m.createdAt)
+}
+
+export function memChatLabel(m: Memory): string {
+	return m.fromChatName.length > 0 ? m.fromChatName : '未知会话'
+}
+
+// ---------------- 工具 ----------------
+
+/** 三条记忆工具的 schema（每次请求都带） */
+export function memoryTools(): Array<UTSJSONObject> {
+	const out: Array<UTSJSONObject> = []
+
+	// 1. memory_query
+	const t1 = new UTSJSONObject()
+	t1['type'] = 'function'
+	const f1 = new UTSJSONObject()
+	f1['name'] = 'memory_query'
+	f1['description'] = '查询长期记忆库。用户提到「上次」「之前」「我说过」「你还记得」「来着」这类事，' +
+		'或问你一个他可能以前告诉过你的信息（偏好、称呼、约定、日期）时，必须先调用它再回答，' +
+		'哪怕你觉得自己没听过也要先查。'
+	const p1 = new UTSJSONObject()
+	p1['type'] = 'object'
+	const props1 = new UTSJSONObject()
+	const q1 = new UTSJSONObject()
+	q1['type'] = 'string'
+	q1['description'] = '1~4 个关键词，用空格隔开，例如「咖啡 口味」「生日」'
+	props1['query'] = q1
+	p1['properties'] = props1
+	const r1: Array<string> = ['query']
+	p1['required'] = r1
+	f1['parameters'] = p1
+	t1['function'] = f1
+	out.push(t1)
+
+	// 2. memory_add
+	const t2 = new UTSJSONObject()
+	t2['type'] = 'function'
+	const f2 = new UTSJSONObject()
+	f2['name'] = 'memory_add'
+	f2['description'] = '把值得长期记住的用户信息存进记忆库（偏好、经历、重要约定、称呼）。' +
+		'用户说出以前没提过的新事实时调用；用户明确说「记一下」「记住」时必须调用，没调工具不要口头假装记了。' +
+		'同一件事只存一条，措辞不同也算同一条；日常寒暄、对方的附和、闲聊追问不要调用。'
+	const p2 = new UTSJSONObject()
+	p2['type'] = 'object'
+	const props2 = new UTSJSONObject()
+	const c2 = new UTSJSONObject()
+	c2['type'] = 'string'
+	c2['description'] = '记忆正文，200 字以内，一句话说清'
+	props2['content'] = c2
+	const g2 = new UTSJSONObject()
+	g2['type'] = 'string'
+	g2['description'] = '1~3 个短标签，用逗号或空格隔开，如「偏好 工作」'
+	props2['tags'] = g2
+	p2['properties'] = props2
+	const r2: Array<string> = ['content', 'tags']
+	p2['required'] = r2
+	f2['parameters'] = p2
+	t2['function'] = f2
+	out.push(t2)
+
+	// 3. memory_remove
+	const t3 = new UTSJSONObject()
+	t3['type'] = 'function'
+	const f3 = new UTSJSONObject()
+	f3['name'] = 'memory_remove'
+	f3['description'] = '删除一条记忆。只有用户明确要求「忘掉这件事」时才调用；不确定是哪条就先 memory_query 查出来。'
+	const p3 = new UTSJSONObject()
+	p3['type'] = 'object'
+	const props3 = new UTSJSONObject()
+	const i3 = new UTSJSONObject()
+	i3['type'] = 'string'
+	i3['description'] = '要删除的记忆 id（从 memory_query 的结果里拿）'
+	props3['id'] = i3
+	p3['properties'] = props3
+	const r3: Array<string> = ['id']
+	p3['required'] = r3
+	f3['parameters'] = p3
+	t3['function'] = f3
+	out.push(t3)
+
+	return out
+}
+
+/** 换行符：不用 '\n' 转义，避免 Android 端 UTS 编译器的转义解析问题 */
+const NL: string = String.fromCharCode(10)
+
+/** 记忆系统写进系统提示词的规则 */
+export function memoryRule(): string {
+	return NL + NL + '【记忆】你有一个跨会话的长期记忆库，通过工具读写；记忆不会自动出现在上下文里，需要你主动查。' +
+		NL + '【必须先查】两种情况必须先调用 memory_query 再回答：' +
+		NL + '1. 用户提到「上次」「之前」「我说过」「你还记得」「来着」这类内容，或话题涉及你不确定的对方偏好、称呼、约定、重要日期；' +
+		NL + '2. 用户问你一个他可能以前告诉过你的信息（「我喜欢吃什么来着」「我周几上班」「我说过我哥叫什么吗」）。' +
+		NL + '第 2 种里，哪怕你觉得自己肯定没听过这件事，也必须先查一遍再说不知道——「没查就说不记得」等于失职。' +
+		NL + '查不到就正常回答（可以坦白没印象），绝对不要编造记忆里没有的内容，也不要假装记得。' +
+		NL + '用户质疑「你真的记下了吗」时，也要先 memory_query 用工具核实，别凭感觉保证。' +
+		NL + '【存】对方透露了长期有用的信息（口味偏好、工作、家人、重要经历、约定）时，用 memory_add 存下来：' +
+		'正文 200 字以内，1~3 个短标签。日常寒暄、临时情绪不要存。' +
+		NL + '【用户点名要记的必须当场存】对方说「记一下」「记住」「帮我记」这类话时，本轮回复里就必须真的调用 ' +
+		'memory_add 完成存储，再回复。绝对不允许没调工具就口头说「记下了」「记住了」——那等于骗人。' +
+		NL + '【只在有新信息时调用】除了上面这种点名情况：如果这一轮对方没有说出以前没提过的新事实——只是回应、附和、追问、' +
+		'接着上一个话题闲聊——那就一个记忆工具都不要调用。宁可漏存，也不要每轮都存。' +
+		NL + '【不要重复】同一件事只存一条。存之前先想一下是不是已经存过（拿不准就先 memory_query 查）；' +
+		'对方只是在附和（「好」「OK」「嗯」「知道了」）或重复刚才说过的话时，绝对不要再存一遍。' +
+		'每条回复最多调用一次 memory_add，同一件事换个说法也算同一条；一旦工具返回 duplicate，' +
+		'以后就永远不要再存这件事。' +
+		NL + '【删】只有对方明确要求忘掉某事时才用 memory_remove。' +
+		NL + '不要在正文里提到「记忆」「工具」「标签」这些词。'
+}
+
+/** 工具参数 JSON：解析失败回 null */
+function parseToolArgs(json: string): UTSJSONObject | null {
+	try {
+		return JSON.parse<UTSJSONObject>(json)
+	} catch (e) {
+		return null
+	}
+}
+
+/** 执行一次工具调用，返回给模型看的 JSON 字符串 */
+export function runMemoryTool(name: string, argsJson: string, chatId: string, chatName: string): string {
+	const args = parseToolArgs(argsJson)
+	if (args == null) {
+		return '{"ok":false,"error":"参数不是合法 JSON"}'
+	}
+
+	if (name == 'memory_add') {
+		const c = args!.getString('content')
+		const text = c != null ? c! : ''
+		const tg = args!.getString('tags')
+		const tags = parseTags(tg != null ? tg! : '')
+		const res = addMemoryEx(text, tags, chatId, chatName)
+		if (res == null) {
+			if (memIsFull()) {
+				return '{"ok":false,"full":true,"error":"记忆已经存满 ' + MEM_LIMIT.toString() +
+					' 条，这次没有保存。请提醒用户去「记忆管理」清理一些再继续。"}'
+			}
+			return '{"ok":false,"error":"正文为空，没有保存"}'
+		}
+		if (res!.duplicate) {
+			// 告诉模型这条已经有了，别再换个说法存一遍
+			const changedFlag = res!.changed ? 'true' : 'false'
+			const note = res!.changed
+				? '这条记忆之前就存过了，已把这次的新内容/标签并进去。同一件事不要再存第二次。'
+				: '这条记忆之前就存过了，而且这次没有任何新内容，什么都没变。以后别再调用 memory_add 存这件事。'
+			return '{"ok":true,"duplicate":true,"changed":' + changedFlag + ',"id":' +
+				JSON.stringify(res!.mem.id) + ',"note":' + JSON.stringify(note) + '}'
+		}
+		return '{"ok":true,"id":' + JSON.stringify(res!.mem.id) + '}'
+	}
+
+	if (name == 'memory_query') {
+		const q = args!.getString('query')
+		const out = queryMemories(q != null ? q! : '')
+		let items = ''
+		for (let i = 0; i < out.length; i++) {
+			if (i > 0) {
+				items += ','
+			}
+			items += '{"id":' + JSON.stringify(out[i].id) +
+				',"text":' + JSON.stringify(out[i].text) +
+				',"tags":' + JSON.stringify(out[i].tags) +
+				',"created":"' + dateStr(out[i].createdAt) + '"}'
+		}
+		return '{"count":' + out.length.toString() + ',"memories":[' + items + ']}'
+	}
+
+	if (name == 'memory_remove') {
+		const id = args!.getString('id')
+		if (id == null || id!.length == 0) {
+			return '{"ok":false,"error":"缺少 id"}'
+		}
+		const ok = removeMemory(id!)
+		return ok ? '{"ok":true,"deleted":' + JSON.stringify(id!) + '}' : '{"ok":false,"error":"没找到这条记忆"}'
+	}
+
+	return '{"ok":false,"error":"没有这个工具"}'
+}
