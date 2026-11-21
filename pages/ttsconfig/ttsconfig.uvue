@@ -1,0 +1,530 @@
+<template>
+	<view class="page">
+
+		<!-- 头部：返回 + 标题（防 Vite 缓存标记2） -->
+		<view class="nav" :style="'padding-top:' + headPad + 'px'">
+			<view class="back" @click="goBack">
+				<text class="back-t">←</text>
+			</view>
+			<text class="title">语音配置</text>
+		</view>
+		<view class="rule"></view>
+
+		<scroll-view class="body" scroll-y="true">
+			<view class="wrap">
+
+				<text class="hint">开启后 AI 能用 BreezeBlue 合成语音消息发给你，按字符计费。Key 只保存在这台设备上。语音合成需要 Android 版（浏览器预览受跨域限制不可用）。</text>
+
+				<!-- 开关 -->
+				<view class="tts-row" @click="toggleTts">
+					<view class="tts-main">
+						<text class="tts-t">AI 可以发语音</text>
+						<text class="tts-s">聊天时 AI 可以主动发一条语音过来</text>
+					</view>
+					<view class="tg" :style="t.on ? 'background-color:#1C1A16;justify-content:flex-end' : 'background-color:#DCD4C4;justify-content:flex-start'">
+						<view class="tg-knob"></view>
+					</view>
+				</view>
+
+				<view v-if="t.on">
+					<view class="hair"></view>
+
+					<!-- Key -->
+					<view class="field">
+						<text class="label">BreezeBlue API Key</text>
+						<input class="input" :value="t.apiKey" :maxlength="300" placeholder="brz-…"
+							placeholder-style="color:#B9B1A0" @input="onKeyInput" type="password" />
+						<view class="input-line"></view>
+						<view class="key-help" @click="openKeyHelp">
+							<text class="key-help-t">怎么获取 Key？看图教程 ›</text>
+						</view>
+					</view>
+
+					<!-- 音色预设 -->
+					<view class="field">
+						<text class="label">音色</text>
+						<view class="voice-segs">
+							<view class="voice-seg" v-for="v in voices" :key="v.key" :style="t.preset == v.key ? 'background-color:#1C1A16;border-color:#1C1A16' : 'background-color:#F7F2E8;border-color:#DCD4C4'" @click="pickVoice(v.key)">
+								<text class="voice-seg-t" :style="t.preset == v.key ? 'color:#F7F2E8' : 'color:#6B6656'">{{ v.label }}</text>
+							</view>
+							<view class="voice-seg" :style="t.preset == 'custom' ? 'background-color:#1C1A16;border-color:#1C1A16' : 'background-color:#F7F2E8;border-color:#DCD4C4'" @click="pickVoice('custom')">
+								<text class="voice-seg-t" :style="t.preset == 'custom' ? 'color:#F7F2E8' : 'color:#6B6656'">自定义</text>
+							</view>
+						</view>
+						<input v-if="t.preset == 'custom'" class="input" :value="t.voiceId" :maxlength="60" placeholder="voice_id，例如 voc_xxxxxxxx"
+							placeholder-style="color:#B9B1A0" @input="onVoiceIdInput" />
+						<view v-if="t.preset == 'custom'" class="input-line"></view>
+						<text v-if="t.preset == 'custom'" class="tip">填 BreezeBlue 的音色 ID（voc_ 开头，控制台或 /v1/voices 里能查到）；表演指令可留空，默认说法沿用提示</text>
+						<text v-else class="tip">三个定稿音色，选中即换整套参数（音色/语速/音量/默认语气）</text>
+					</view>
+
+					<!-- 微调 -->
+					<view class="duo">
+						<view class="duo-cell">
+							<text class="label">语速</text>
+							<input class="input" type="digit" :value="speedText" :maxlength="4" placeholder="1.0"
+								placeholder-style="color:#B9B1A0" @input="onSpeedInput" />
+							<view class="input-line"></view>
+						</view>
+						<view class="duo-gap"></view>
+						<view class="duo-cell">
+							<text class="label">音量</text>
+							<input class="input" type="digit" :value="volText" :maxlength="4" placeholder="1.0"
+								placeholder-style="color:#B9B1A0" @input="onVolInput" />
+							<view class="input-line"></view>
+						</view>
+					</view>
+					<text class="tip">语速 0.5~2.0；音量 0.01~2.0（超过 1 可能破音）</text>
+
+					<view class="field">
+						<text class="label">模型</text>
+						<input class="input" :value="t.model" :maxlength="40" placeholder="breeze-tts-2"
+							placeholder-style="color:#B9B1A0" @input="onModelInput" />
+						<view class="input-line"></view>
+						<text class="tip">breeze-tts-2 中英；breeze-tts-2-multilingual 多语种</text>
+					</view>
+
+					<!-- 试听 -->
+					<view class="test-row">
+						<view class="testbtn" @click="onTest">
+							<text class="testbtn-t">{{ testing ? '合成中…' : '试听一句' }}</text>
+						</view>
+						<view class="test-state">
+							<view class="dot" :style="'background-color:' + testColor"></view>
+							<text class="test-msg" :style="'color:' + testColor">{{ testMsg }}</text>
+						</view>
+					</view>
+				</view>
+
+				<!-- 保存 -->
+				<view class="savebtn" @click="onSave">
+					<text class="savebtn-t">保存语音设置</text>
+				</view>
+
+				<view class="pad"></view>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script lang="uts">
+	import { parseNumberText } from '../../utils/store.uts'
+	import { TtsConfig, TtsPreset, defaultTtsConfig, ttsPresetOf, loadTtsConfig, saveTtsConfig, TTS_PRESETS, synthesizeTts, playVoiceUrl, stopVoice } from '../../utils/tts.uts'
+
+	/** 回主线程执行（回调可能不在主线程，改响应式数据前要包这层） */
+	function runOnMain(fn: () => void): void {
+		// #ifdef APP-ANDROID
+		try {
+			const act = UTSAndroid.getUniActivity()
+			if (act != null) {
+				act!.runOnUiThread(() => {
+					fn()
+				})
+				return
+			}
+		} catch (e) {
+			// 拿不到 Activity 就直接执行
+		}
+		// #endif
+		fn()
+	}
+
+	export default {
+		data() {
+			return {
+				headPad: 18,
+				t: defaultTtsConfig() as TtsConfig,
+				voices: [] as Array<TtsPreset>,
+				speedText: '1.0',
+				volText: '1.0',
+				testing: false,
+				testMsg: '还没试听',
+				testColor: '#A9A292'
+			}
+		},
+		onLoad() {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 14
+				}
+			} catch (e) {
+				// 用默认值
+			}
+			this.t = loadTtsConfig()
+			this.voices = TTS_PRESETS
+			this.speedText = this.t.speed.toString()
+			this.volText = this.t.vol.toString()
+		},
+		onUnload() {
+			// 离开页面停掉正在播的试听
+			stopVoice()
+		},
+		methods: {
+			toggleTts(): void {
+				this.t.on = !this.t.on
+			},
+			openKeyHelp(): void {
+				uni.navigateTo({ url: '/pages/keyhelp/keyhelp' })
+			},
+			onKeyInput(e: InputEvent): void {
+				this.t.apiKey = e.detail.value
+				this.testColor = '#A9A292'
+				this.testMsg = 'Key 已改，重新试听'
+			},
+			pickVoice(key: string): void {
+				if (key == 'custom') {
+					// 自定义：只切模式，voiceId 留给用户自己填（保留现值方便微调）
+					this.t.preset = 'custom'
+					this.testColor = '#A9A292'
+					this.testMsg = '填入 voice_id 后试听'
+					return
+				}
+				// 整套参数跟着预设走（音色/语速/音量/默认语气）
+				const p = ttsPresetOf(key)
+				this.t.preset = p.key
+				this.t.voiceId = p.voiceId
+				this.t.speed = p.speed
+				this.t.vol = p.vol
+				this.t.instruction = p.instruction
+				this.speedText = p.speed.toString()
+				this.volText = p.vol.toString()
+				this.testColor = '#A9A292'
+				this.testMsg = '音色已改，重新试听'
+			},
+			onVoiceIdInput(e: InputEvent): void {
+				this.t.voiceId = e.detail.value
+				this.testColor = '#A9A292'
+				this.testMsg = 'voice_id 已改，重新试听'
+			},
+			onSpeedInput(e: InputEvent): void {
+				this.speedText = e.detail.value
+				const v = parseNumberText(this.speedText)
+				if (v >= 0.5 && v <= 2) {
+					this.t.speed = v
+				}
+			},
+			onVolInput(e: InputEvent): void {
+				this.volText = e.detail.value
+				const v = parseNumberText(this.volText)
+				if (v >= 0.01 && v <= 2) {
+					this.t.vol = v
+				}
+			},
+			onModelInput(e: InputEvent): void {
+				this.t.model = e.detail.value
+			},
+			onTest(): void {
+				if (this.testing) {
+					return
+				}
+				if (this.t.apiKey.trim().length == 0) {
+					this.testMsg = '先填 Key 再试听'
+					this.testColor = '#B4553C'
+					return
+				}
+				this.testing = true
+				this.testMsg = '正在合成…'
+				this.testColor = '#A9A292'
+				const cfg = this.t
+				synthesizeTts(cfg, '又试听呀，那我就和你聊聊天吧', 'calm', (url: string, err: string) => {
+					runOnMain(() => {
+						this.testing = false
+						if (url.length > 0) {
+							this.testMsg = '试听播放中…'
+							this.testColor = '#2F5D50'
+							playVoiceUrl(url, () => {
+								runOnMain(() => {
+									this.testMsg = '试听完成'
+								})
+							})
+						} else {
+							this.testMsg = err
+							this.testColor = '#B4553C'
+						}
+					})
+				})
+			},
+			onSave(): void {
+				this.t.apiKey = this.t.apiKey.trim()
+				this.t.voiceId = this.t.voiceId.trim()
+				if (this.t.on && this.t.apiKey.length == 0) {
+					this.testMsg = '开启语音要先填 Key'
+					this.testColor = '#B4553C'
+					return
+				}
+				if (this.t.preset == 'custom' && this.t.voiceId.trim().length == 0) {
+					this.testMsg = '自定义要填 voice_id'
+					this.testColor = '#B4553C'
+					return
+				}
+				if (this.t.voiceId.length == 0) {
+					const p = ttsPresetOf(this.t.preset)
+					this.t.voiceId = p.voiceId
+				}
+				saveTtsConfig(this.t)
+				uni.showToast({ title: this.t.on ? '语音已开启' : '已保存', icon: 'none' })
+				setTimeout(() => {
+					runOnMain(() => {
+						uni.navigateBack()
+					})
+				}, 450)
+			},
+			goBack(): void {
+				uni.navigateBack()
+			}
+		}
+	}
+</script>
+
+<style>
+	.page {
+		flex: 1;
+		flex-direction: column;
+		background-color: #F7F2E8;
+	}
+
+	.nav {
+		flex-direction: row;
+		align-items: flex-end;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 10px;
+	}
+
+	.back {
+		width: 34px;
+		height: 30px;
+		justify-content: flex-end;
+		padding-bottom: 4px;
+	}
+
+	.back-t {
+		font-size: 20px;
+		color: #1C1A16;
+	}
+
+	.title {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 23px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #1C1A16;
+		margin-left: 6px;
+	}
+
+	.rule {
+		height: 2px;
+		background-color: #1C1A16;
+		margin-left: 24px;
+		margin-right: 24px;
+	}
+
+	.body {
+		flex: 1;
+	}
+
+	.wrap {
+		padding-left: 24px;
+		padding-right: 24px;
+	}
+
+	.hint {
+		font-size: 12px;
+		line-height: 19px;
+		color: #8A8375;
+		margin-top: 14px;
+	}
+
+	.hair {
+		height: 1px;
+		background-color: #DCD4C4;
+		margin-top: 18px;
+	}
+
+	.tts-row {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		margin-top: 16px;
+	}
+
+	.tts-main {
+		flex: 1;
+		margin-right: 16px;
+	}
+
+	.tts-t {
+		font-size: 13.5px;
+		color: #1C1A16;
+		font-weight: bold;
+	}
+
+	.tts-s {
+		font-size: 11px;
+		line-height: 16px;
+		color: #8A8375;
+		margin-top: 3px;
+	}
+
+	.tg {
+		width: 44px;
+		height: 24px;
+		border-radius: 12px;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.tg-knob {
+		width: 20px;
+		height: 20px;
+		border-radius: 10px;
+		background-color: #F7F2E8;
+		margin-left: 2px;
+		margin-right: 2px;
+	}
+
+	.field {
+		margin-top: 18px;
+	}
+
+	.label {
+		font-size: 11px;
+		letter-spacing: 2px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.input {
+		font-size: 14px;
+		color: #1C1A16;
+		padding-top: 8px;
+		padding-bottom: 8px;
+	}
+
+	.input-line {
+		height: 1px;
+		background-color: #DCD4C4;
+	}
+
+	.tip {
+		font-size: 11px;
+		line-height: 17px;
+		color: #B9B1A0;
+		margin-top: 6px;
+	}
+
+	.duo {
+		flex-direction: row;
+		margin-top: 18px;
+	}
+
+	.duo-cell {
+		flex: 1;
+	}
+
+	.duo-gap {
+		width: 20px;
+	}
+
+	/* Key 获取教程入口 */
+	.key-help {
+		margin-top: 10px;
+		padding: 9px 12px;
+		background-color: #EFE7D8;
+		border: 1px solid #DCD4C4;
+		border-radius: 4px;
+	}
+
+	.key-help-t {
+		font-size: 12px;
+		color: #B4553C;
+	}
+
+	.voice-segs {
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-top: 8px;
+	}
+
+	.voice-seg {
+		padding-top: 6px;
+		padding-bottom: 6px;
+		padding-left: 12px;
+		padding-right: 12px;
+		border-width: 1px;
+		border-color: #DCD4C4;
+		border-radius: 3px;
+		background-color: #F7F2E8;
+		margin-right: 8px;
+		margin-top: 6px;
+	}
+
+	.voice-seg-t {
+		font-size: 12px;
+	}
+
+	.test-row {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 20px;
+	}
+
+	.testbtn {
+		padding-top: 9px;
+		padding-bottom: 9px;
+		padding-left: 16px;
+		padding-right: 16px;
+		border-width: 1px;
+		border-color: #1C1A16;
+		border-radius: 3px;
+	}
+
+	.testbtn-t {
+		font-size: 12.5px;
+		letter-spacing: 1px;
+		color: #1C1A16;
+	}
+
+	.test-state {
+		flex: 1;
+		flex-direction: row;
+		align-items: center;
+		margin-left: 14px;
+	}
+
+	.dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 3px;
+		margin-right: 7px;
+	}
+
+	.test-msg {
+		flex: 1;
+		font-size: 11.5px;
+		color: #A9A292;
+	}
+
+	.savebtn {
+		flex-direction: row;
+		margin-top: 26px;
+		padding-top: 14px;
+		padding-bottom: 14px;
+		border-radius: 3px;
+		background-color: #1C1A16;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.savebtn-t {
+		font-size: 13px;
+		letter-spacing: 3px;
+		color: #F7F2E8;
+	}
+
+	.pad {
+		height: 28px;
+	}
+</style>

@@ -23,6 +23,9 @@ desktop.ini
 # ---- 发布产物：APK 改放 GitHub Releases，不入库 ----
 release/
 
+# ---- 3D 模型生成中间产物（74MB 工作目录，源码无引用）----
+img2threejs-work/
+
 # ---- 环境与密钥，禁止上传 ----
 .env
 .env.local

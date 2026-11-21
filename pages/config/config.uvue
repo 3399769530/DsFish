@@ -108,6 +108,17 @@
 					<text class="savebtn-t">保存并使用</text>
 				</view>
 
+				<view class="hair"></view>
+
+				<!-- 语音配置入口（独立页） -->
+				<view class="tts-entry" @click="onTtsPage">
+					<view class="tts-main">
+						<text class="tts-t">语音配置</text>
+						<text class="tts-s">AI 发语音（BreezeBlue）的开关、Key 和音色，单独一页</text>
+					</view>
+					<text class="tts-arrow">›</text>
+				</view>
+
 				<text class="footer">切换服务商时，各家的 Key 分别保存，不会互相覆盖。</text>
 				<view class="pad"></view>
 			</view>
@@ -158,6 +169,11 @@
 			}
 		},
 		methods: {
+			onTtsPage(): void {
+				uni.navigateTo({
+					url: '/pages/ttsconfig/ttsconfig'
+				})
+			},
 			syncText(): void {
 				this.tempText = this.p.temperature.toString()
 				this.maxText = this.p.maxTokens.toString()
@@ -515,6 +531,39 @@
 		line-height: 17px;
 		color: #B9B1A0;
 		margin-top: 14px;
+	}
+
+	/* 语音配置入口行 */
+	.tts-entry {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		margin-top: 16px;
+		padding-top: 6px;
+		padding-bottom: 6px;
+	}
+
+	.tts-main {
+		flex: 1;
+		margin-right: 16px;
+	}
+
+	.tts-t {
+		font-size: 13.5px;
+		color: #1C1A16;
+		font-weight: bold;
+	}
+
+	.tts-s {
+		font-size: 11px;
+		line-height: 16px;
+		color: #8A8375;
+		margin-top: 3px;
+	}
+
+	.tts-arrow {
+		font-size: 18px;
+		color: #B9B1A0;
 	}
 
 	.pad {

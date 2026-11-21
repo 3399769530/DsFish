@@ -1,0 +1,178 @@
+/**
+ * 缓存清理：扫掉没被任何数据引用的图片/语音文件。
+ * App 落盘的图都在 USER_DATA_PATH/dsfish（头像、消息图、缩略图、背景），
+ * 语音在 USER_DATA_PATH/voices。引用源 = 会话（头像/背景）+ 消息（图/缩略图/语音）
+ * + 角色卡（头像/背景）+ 我的（头像）。谁都不引用的孤儿文件删掉。
+ * web 端没有文件系统，扫描回 0、清理空转。
+ */
+import { loadChats, loadChars, loadMe, loadMsgs } from './store.uts'
+
+export type CacheScan = {
+	files: number
+	bytes: number
+}
+
+export type CacheCleanResult = {
+	removed: number
+	freed: number
+}
+
+/** 收集所有还被引用的文件绝对路径 */
+function collectRefs(): Set<string> {
+	const refs = new Set<string>()
+	const chats = loadChats()
+	for (let i = 0; i < chats.length; i++) {
+		const av = chats[i].charAvatar
+		if (av != null && av!.length > 0) {
+			refs.add(av!)
+		}
+		const bg = chats[i].bgImage
+		if (bg != null && bg!.length > 0) {
+			refs.add(bg!)
+		}
+	}
+	const chars = loadChars()
+	for (let i = 0; i < chars.length; i++) {
+		const av = chars[i].avatar
+		if (av != null && av!.length > 0) {
+			refs.add(av!)
+		}
+		const bg = chars[i].bgImage
+		if (bg != null && bg!.length > 0) {
+			refs.add(bg!)
+		}
+	}
+	const me = loadMe()
+	const mav = me.avatar
+	if (mav != null && mav!.length > 0) {
+		refs.add(mav!)
+	}
+	for (let i = 0; i < chats.length; i++) {
+		const msgs = loadMsgs(chats[i].id)
+		for (let j = 0; j < msgs.length; j++) {
+			const m = msgs[j]
+			const im = m.image
+			if (im != null && im!.length > 0) {
+				refs.add(im!)
+			}
+			const th = m.imageThumb
+			if (th != null && th!.length > 0) {
+				refs.add(th!)
+			}
+			const vo = m.voice
+			if (vo != null && vo!.length > 0) {
+				refs.add(vo!)
+			}
+		}
+	}
+	return refs
+}
+
+/** 列出一个目录里的文件（完整路径 + 字节数） */
+function listDir(dir: string): Array<UTSJSONObject> {
+	const out: Array<UTSJSONObject> = []
+	const fsm = uni.getFileSystemManager()
+	try {
+		const names = fsm.readdirSync(dir)
+		if (names == null) {
+			return out
+		}
+		const list = names!
+		for (let i = 0; i < list.length; i++) {
+			const fp = dir + '/' + list[i]
+			let size = 0
+			try {
+				const st = fsm.statSync(fp, false)
+				if (st.length > 0 && !st[0].stats.isDirectory()) {
+					size = st[0].stats.size
+				} else {
+					continue
+				}
+			} catch (e) {
+				continue
+			}
+			const o = new UTSJSONObject()
+			o['path'] = fp
+			o['size'] = size
+			out.push(o)
+		}
+	} catch (e) {
+		// 目录不存在就是没文件
+	}
+	return out
+}
+
+function allCacheFiles(): Array<UTSJSONObject> {
+	// #ifdef APP
+	const base = uni.env.USER_DATA_PATH
+	const out = listDir(base + '/dsfish')
+	const vs = listDir(base + '/voices')
+	for (let i = 0; i < vs.length; i++) {
+		out.push(vs[i])
+	}
+	return out
+	// #endif
+	// #ifndef APP
+	return [] as Array<UTSJSONObject>
+	// #endif
+}
+
+/** 有多少文件、占多大（孤儿部分） */
+export function scanCache(): CacheScan {
+	const refs = collectRefs()
+	const files = allCacheFiles()
+	let n = 0
+	let bytes = 0
+	for (let i = 0; i < files.length; i++) {
+		const p = files[i].getString('path')
+		if (p == null || refs.has(p!)) {
+			continue
+		}
+		n += 1
+		const sz = files[i].getNumber('size')
+		if (sz != null) {
+			bytes += sz!
+		}
+	}
+	return { files: n, bytes: bytes } as CacheScan
+}
+
+/** 删掉所有孤儿文件，回删了几个、释放多少字节 */
+export function cleanCache(): CacheCleanResult {
+	const refs = collectRefs()
+	const files = allCacheFiles()
+	let removed = 0
+	let freed = 0
+	// #ifdef APP
+	const fsm = uni.getFileSystemManager()
+	for (let i = 0; i < files.length; i++) {
+		const p = files[i].getString('path')
+		if (p == null || refs.has(p!)) {
+			continue
+		}
+		try {
+			fsm.unlinkSync(p!)
+			removed += 1
+			const sz = files[i].getNumber('size')
+			if (sz != null) {
+				freed += sz!
+			}
+		} catch (e) {
+			// 删不动的跳过
+		}
+	}
+	// #endif
+	return { removed: removed, freed: freed } as CacheCleanResult
+}
+
+/** 字节数说人话 */
+export function fmtBytes(n: number): string {
+	if (n >= 1048576) {
+		const v = Math.round(n * 10 / 1048576) / 10
+		return v.toString() + ' MB'
+	}
+	if (n >= 1024) {
+		return Math.round(n / 1024).toString() + ' KB'
+	}
+	return n.toString() + ' B'
+}

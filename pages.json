@@ -17,6 +17,22 @@
 			}
 		},
 		{
+			"path": "pages/ttsconfig/ttsconfig",
+			"style": {
+				"navigationBarTitleText": "语音配置",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		},
+		{
+			"path": "pages/keyhelp/keyhelp",
+			"style": {
+				"navigationBarTitleText": "获取教程",
+				"navigationStyle": "custom",
+				"backgroundColor": "#F7F2E8"
+			}
+		},
+		{
 			"path": "pages/chat/chat",
 			"style": {
 				"navigationBarTitleText": "聊天",

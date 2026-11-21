@@ -187,18 +187,6 @@ function extractToolDeltas(payload: string): Array<ToolDelta> {
 	return out
 }
 
-type ResMsg = {
-	content: string
-}
-
-type ResChoice = {
-	message: ResMsg
-}
-
-type ResBody = {
-	choices: Array<ResChoice>
-}
-
 let activeTask: RequestTask | null = null
 let aborted: boolean = false
 let sseBuffer: string = ''
@@ -466,20 +454,21 @@ function extractWhole(data: any): string {
 	if (raw.length == 0) {
 		return ''
 	}
-	try {
-		const parsed = JSON.parse<ResBody>(raw)
-		if (parsed == null) {
-			return ''
-		}
-		const choices = parsed!.choices
-		if (choices.length == 0) {
-			return ''
-		}
-		return choices[0].message.content
-	} catch (e) {
-		// 流式响应整包不是一个 JSON，正常现象
+	// 泛型 JSON.parse 遇到顶层非对象（网关回纯文本错误等）会抛 gson 异常，先安全探类型
+	const obj = parseObjOrNull(raw)
+	if (obj == null) {
 		return ''
 	}
+	const choices = obj!.getArray<UTSJSONObject>('choices')
+	if (choices == null || choices!.length == 0) {
+		return ''
+	}
+	const msg = choices![0].getJSON('message')
+	if (msg == null) {
+		return ''
+	}
+	const c = msg!.getString('content')
+	return c != null ? c! : ''
 }
 
 function errorFrom(data: any, code: number): string {
@@ -836,12 +825,23 @@ export function simpleChat(p: Profile, msgs: Array<ChatMsg>, done: (ok: boolean,
 				return
 			}
 			const raw = JSON.stringify(payload)
-			const parsed = JSON.parse<ResBody>(raw)
-			if (parsed == null || parsed!.choices.length == 0) {
+			const obj = parseObjOrNull(raw)
+			if (obj == null) {
 				done(false, '')
 				return
 			}
-			done(true, parsed!.choices[0].message.content)
+			const choices = obj!.getArray<UTSJSONObject>('choices')
+			if (choices == null || choices!.length == 0) {
+				done(false, '')
+				return
+			}
+			const msg = choices![0].getJSON('message')
+			if (msg == null) {
+				done(false, '')
+				return
+			}
+			const c = msg!.getString('content')
+			done(true, c != null ? c! : '')
 		},
 		fail: (err) => {
 			done(false, '')

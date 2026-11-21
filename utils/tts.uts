@@ -1,0 +1,530 @@
+/**
+ * 语音合成（BreezeBlue TTS）：AI 通过 send_voice 工具主动发一条语音气泡。
+ * 接口返回 mp3 二进制流，Android 端落盘到应用沙盒（永久有效，不再有链接过期问题）；
+ * 平台未开放 CORS，浏览器预览端无法直连，会明确报错提示改用 Android 版。
+ * key 由用户在「语音配置」页自填，只存本机 storage，不进代码不进 Git。
+ */
+
+export type TtsConfig = {
+	on: boolean
+	baseUrl: string
+	apiKey: string
+	model: string
+	voiceId: string
+	/** 语速 0.5~2.0，保音调 */
+	speed: number
+	/** 音量 0.01~2.0（线性增益，>1 可能削顶） */
+	vol: number
+	/** 预设音色键：mihu/ouxiang/jiling */
+	preset: string
+	/** 预设的默认表演指令（模型给了情绪时改用情绪描述） */
+	instruction: string
+}
+
+const KEY_TTS: string = 'dsfish_tts_v2'
+
+/** 音色预设（试听定稿；参数勿随手改） */
+export type TtsPreset = {
+	key: string
+	label: string
+	voiceId: string
+	speed: number
+	vol: number
+	instruction: string
+}
+
+export const TTS_PRESETS: Array<TtsPreset> = [
+	{
+		key: 'mihu', label: '迷糊版', voiceId: 'voc_8yud7hz7c9q2', speed: 1.0, vol: 1.0,
+		instruction: '用清亮柔软、略带奶气的少女声说，像在自己家跟熟人随口聊天，不急不慢，不要播音腔。'
+	} as TtsPreset,
+	{
+		key: 'ouxiang', label: '偶像版', voiceId: 'voc_rn489h83rcvs', speed: 1.0, vol: 1.0,
+		instruction: '用明亮轻盈的少女声说，带一点气息感和旋律感，亲切自然，像在撒娇聊天。'
+	} as TtsPreset,
+	{
+		key: 'jiling', label: '机灵版', voiceId: 'voc_u3nxkd5578wc', speed: 1.0, vol: 1.0,
+		instruction: '用清亮甜软的少女声说，反应轻快活泼，语气灵动，句子之间不拖沓。'
+	} as TtsPreset
+]
+
+/** 按 key 找预设，找不到回第一个（迷糊版，默认） */
+export function ttsPresetOf(key: string): TtsPreset {
+	for (let i = 0; i < TTS_PRESETS.length; i++) {
+		if (TTS_PRESETS[i].key == key) {
+			return TTS_PRESETS[i]
+		}
+	}
+	return TTS_PRESETS[0]
+}
+
+export function defaultTtsConfig(): TtsConfig {
+	const p = ttsPresetOf('mihu')
+	return {
+		on: false,
+		baseUrl: 'https://api.breeze.blue',
+		apiKey: '',
+		model: 'breeze-tts-2',
+		voiceId: p.voiceId,
+		speed: p.speed,
+		vol: p.vol,
+		preset: p.key,
+		instruction: p.instruction
+	} as TtsConfig
+}
+
+export function loadTtsConfig(): TtsConfig {
+	const d = defaultTtsConfig()
+	try {
+		const raw = uni.getStorageSync(KEY_TTS) as string | null
+		if (raw != null && raw!.length > 0) {
+			const v = JSON.parse<UTSJSONObject>(raw!)
+			if (v != null) {
+				const o = v!
+				const on = o.getBoolean('on')
+				if (on != null) {
+					d.on = on!
+				}
+				const bu = o.getString('baseUrl')
+				if (bu != null && bu!.length > 0) {
+					d.baseUrl = bu!
+				}
+				const ak = o.getString('apiKey')
+				if (ak != null) {
+					d.apiKey = ak!
+				}
+				const md = o.getString('model')
+				if (md != null && md!.length > 0) {
+					d.model = md!
+				}
+				const vi = o.getString('voiceId')
+				if (vi != null && vi!.length > 0) {
+					d.voiceId = vi!
+				}
+				const sp = o.getNumber('speed')
+				if (sp != null && sp! >= 0.5 && sp! <= 2) {
+					d.speed = sp!
+				}
+				const vl = o.getNumber('vol')
+				if (vl != null && vl! >= 0.01 && vl! <= 2) {
+					d.vol = vl!
+				}
+				const ps = o.getString('preset')
+				if (ps != null && ps!.length > 0) {
+					d.preset = ps!
+				}
+				const ins = o.getString('instruction')
+				if (ins != null && ins!.length > 0) {
+					d.instruction = ins!
+				}
+				return d
+			}
+		}
+	} catch (e) {
+		// 落空用默认
+	}
+	return d
+}
+
+export function saveTtsConfig(c: TtsConfig): void {
+	uni.setStorageSync(KEY_TTS, JSON.stringify(c))
+}
+
+/** 开关打开且 key 不空才算可用 */
+export function ttsUsable(c: TtsConfig): boolean {
+	return c.on && c.apiKey.trim().length > 0
+}
+
+/** 首页/我的页语音卡片的展示内容 */
+export type TtsStatusView = {
+	state: number
+	line: string
+	color: string
+	link: string
+}
+
+export function buildTtsStatus(c: TtsConfig): TtsStatusView {
+	if (!c.on) {
+		return { state: 0, line: '未开启', color: '#A9A292', link: '去开启' } as TtsStatusView
+	}
+	if (c.apiKey.trim().length == 0) {
+		return { state: 1, line: '缺 API Key', color: '#B4553C', link: '去配置' } as TtsStatusView
+	}
+	const label = c.preset == 'custom' ? '自定义' : ttsPresetOf(c.preset).label
+	return { state: 2, line: label + ' 就绪', color: '#2F5D50', link: '调整' } as TtsStatusView
+}
+
+/** 模型传的情绪 → 表演指令（BreezeBlue 用自然语言指令而不是枚举） */
+function emotionInstruction(emo: string): string {
+	if (emo == 'happy') {
+		return '语气开心雀跃，尾音上扬，像在笑。'
+	}
+	if (emo == 'sad') {
+		return '语气低落委屈，声音轻而慢，带点鼻音。'
+	}
+	if (emo == 'angry') {
+		return '语气生气，咬字重，句子短促。'
+	}
+	if (emo == 'surprised') {
+		return '语气惊讶，音调先扬，带一点停顿。'
+	}
+	if (emo == 'whisper') {
+		return '压低声音轻声说，像怕被人听见，气多声少。'
+	}
+	if (emo == 'calm') {
+		return '语气平静温和，不急不缓。'
+	}
+	return ''
+}
+
+function objFrom(data: any | null): UTSJSONObject | null {
+	if (data == null) {
+		return null
+	}
+	const raw = JSON.stringify(data)
+	if (raw.length == 0) {
+		return null
+	}
+	try {
+		const v = JSON.parse<UTSJSONObject>(raw)
+		if (v != null) {
+			return v!
+		}
+	} catch (e) {
+		// 落空
+	}
+	return null
+}
+
+/**
+ * 合成一段语音：成功回本地 mp3 文件路径（Android），失败回空串 + 错误说明。
+ * emotion 传空串则用预设的默认表演指令。
+ * 首选同步接口（实测 ~4 秒）：POST 直接收音频流，用 onChunkReceived 攒字节落盘，
+ * 绕开 uni.request responseType=arraybuffer 的 Android bug（res.data 回 String）。
+ * 一个字节都没收到就退回异步链路（history 轮询 + downloadFile）。
+ */
+export function synthesizeTts(cfg: TtsConfig, text: string, emotion: string,
+	done: (url: string, err: string) => void): void {
+	const t = text.trim()
+	if (t.length == 0) {
+		done('', '没有要说的内容')
+		return
+	}
+	if (cfg.voiceId.trim().length == 0) {
+		done('', '没有填 voice_id')
+		return
+	}
+	const emo = emotion.trim()
+	let ins = cfg.instruction
+	if (emo.length > 0) {
+		const ei = emotionInstruction(emo)
+		if (ei.length > 0) {
+			ins = ei
+		}
+	}
+	// #ifndef APP-ANDROID
+	done('', '浏览器预览不支持语音合成（平台未开放跨域），请用 Android 版')
+	return
+	// #endif
+	// #ifdef APP-ANDROID
+	const key = cfg.apiKey.trim()
+	const base = cfg.baseUrl.trim()
+	const body = new UTSJSONObject()
+	body['text'] = t
+	body['model_id'] = cfg.model
+	body['language_code'] = 'zh'
+	if (ins.length > 0) {
+		body['instructions'] = ins
+	}
+	const vs = new UTSJSONObject()
+	vs['speed'] = cfg.speed
+	vs['volume'] = cfg.vol
+	body['voice_settings'] = vs
+
+	const chunks: ArrayBuffer[] = []
+	let chunkTotal = 0
+	const task = uni.request({
+		url: base + '/v1/text-to-speech/' + cfg.voiceId.trim() + '?output_format=mp3',
+		method: 'POST',
+		header: {
+			'xi-api-key': key,
+			'Content-Type': 'application/json'
+		} as UTSJSONObject,
+		data: body,
+		enableChunked: true,
+		timeout: 45000,
+		success: (res) => {
+			if (res.statusCode == 401) {
+				done('', 'API Key 无效')
+				return
+			}
+			if (res.statusCode != 200) {
+				done('', '语音服务 HTTP ' + res.statusCode.toString())
+				return
+			}
+			// 响应头里的任务号：chunk 没收到或存盘失败都能退回异步链路
+			let hid = ''
+			const ho = objFrom(res.header)
+			if (ho != null) {
+				const hv = ho!.getString('history-item-id')
+				if (hv != null) {
+					hid = hv!
+				}
+			}
+			if (chunkTotal > 0 && chunks.length > 0) {
+				saveVoiceChunks(chunks, (p: string, e: string) => {
+					if (p.length > 0) {
+						done(p, '')
+					} else if (hid.length > 0) {
+						pollTtsJob(base, key, hid, 0, done)
+					} else {
+						done('', e)
+					}
+				})
+				return
+			}
+			if (hid.length > 0) {
+				pollTtsJob(base, key, hid, 0, done)
+			} else {
+				done('', '语音服务没返回音频')
+			}
+		},
+		fail: (e) => {
+			done('', '请求失败：' + e.errMsg)
+		}
+	})
+	task.onChunkReceived((res) => {
+		const buf = res.data
+		chunks.push(buf)
+		chunkTotal += buf.byteLength
+	})
+	// #endif
+}
+
+/** 把收到的字节块合成一个 ArrayBuffer，base64 写进 voices 目录（最稳的落盘方式） */
+function saveVoiceChunks(chunks: ArrayBuffer[], done: (url: string, err: string) => void): void {
+	const fsm = uni.getFileSystemManager()
+	const dir = uni.env.USER_DATA_PATH + '/voices'
+	try {
+		fsm.mkdirSync(dir, true)
+	} catch (e) {
+		// 目录已存在
+	}
+	const name = dir + '/v' + Date.now().toString() + '.mp3'
+	try {
+		let one: ArrayBuffer = chunks[0]
+		if (chunks.length > 1) {
+			let total = 0
+			for (let i = 0; i < chunks.length; i++) {
+				total += chunks[i].byteLength
+			}
+			const out = new Uint8Array(total)
+			let off = 0
+			for (let i = 0; i < chunks.length; i++) {
+				const cu = new Uint8Array(chunks[i])
+				for (let j = 0; j < cu.length; j++) {
+					out[off + j] = cu[j]
+				}
+				off += cu.length
+			}
+			const merged = out.buffer
+			if (merged != null) {
+				one = merged!
+			}
+		}
+		const b64 = uni.arrayBufferToBase64(one)
+		fsm.writeFileSync(name, b64, 'base64')
+		done(name, '')
+	} catch (e) {
+		done('', '语音保存失败：' + e.toString())
+	}
+}
+
+/** 轮询异步合成任务；每 600ms 一次，最多 30 次（18 秒） */
+function pollTtsJob(base: string, key: string, jid: string, tries: number,
+	done: (url: string, err: string) => void): void {
+	if (tries >= 30) {
+		done('', '语音合成超时，稍后再试')
+		return
+	}
+	setTimeout(() => {
+		uni.request({
+			url: base + '/v1/history/' + jid,
+			method: 'GET',
+			header: { 'xi-api-key': key } as UTSJSONObject,
+			timeout: 15000,
+			success: (res) => {
+				const o = objFrom(res.data)
+				const st = o != null ? o!.getString('state') : null
+				if (st != null && st! == 'ready') {
+					downloadTtsAudio(base, key, jid, done)
+				} else if (st != null && (st! == 'error' || st! == 'failed')) {
+					done('', '语音合成失败（服务端）')
+				} else {
+					pollTtsJob(base, key, jid, tries + 1, done)
+				}
+			},
+			fail: (e) => {
+				done('', '查询任务失败：' + e.errMsg)
+			}
+		})
+	}, 600)
+}
+
+/** 下载合成好的音频到临时文件，再挪进 voices 目录持久保存 */
+function downloadTtsAudio(base: string, key: string, jid: string,
+	done: (url: string, err: string) => void): void {
+	uni.downloadFile({
+		url: base + '/v1/history/' + jid + '/audio',
+		header: { 'xi-api-key': key } as UTSJSONObject,
+		timeout: 30000,
+		success: (res) => {
+			if (res.statusCode != 200) {
+				done('', '音频下载失败 HTTP ' + res.statusCode.toString())
+				return
+			}
+			moveVoiceFile(res.tempFilePath, done)
+		},
+		fail: (e) => {
+			done('', '音频下载失败：' + e.errMsg)
+		}
+	})
+}
+
+/** 把临时下载文件复制进应用沙盒 voices 目录（临时目录会被系统清理，必须挪） */
+function moveVoiceFile(tempPath: string, done: (url: string, err: string) => void): void {
+	// #ifdef APP-ANDROID
+	const fsm = uni.getFileSystemManager()
+	const dir = uni.env.USER_DATA_PATH + '/voices'
+	try {
+		fsm.mkdirSync(dir, true)
+	} catch (e) {
+		// 目录已存在
+	}
+	const name = dir + '/v' + Date.now().toString() + '.mp3'
+	try {
+		fsm.copyFileSync(tempPath, name)
+		done(name, '')
+	} catch (e) {
+		done('', '语音保存失败')
+	}
+	// #endif
+	// #ifndef APP-ANDROID
+	done('', '浏览器预览不支持语音合成，请用 Android 版')
+	// #endif
+}
+
+/** 按文件大小估算 mp3 秒数（合成固定 128kbps ≈ 16000 字节/秒，最少 1 秒）；web 端回 0 */
+export function voiceDurSec(path: string): number {
+	// #ifdef APP-ANDROID
+	try {
+		const st = uni.getFileSystemManager().statSync(path, false)
+		if (st.length > 0) {
+			const sz = st[0].stats.size
+			let sec = Math.floor(sz / 16000)
+			if (sec < 1) {
+				sec = 1
+			}
+			return sec
+		}
+	} catch (e) {
+		// 读不到就 0
+	}
+	// #endif
+	return 0
+}
+
+// ---------------- 播放（单例，播新的自动停旧的） ----------------
+
+let audioCtx: InnerAudioContext | null = null
+let audioEndCb: (() => void) | null = null
+
+/** 回主线程执行（Android 音频回调可能在子线程） */
+function onMain(fn: () => void): void {
+	// #ifdef APP-ANDROID
+	try {
+		const act = UTSAndroid.getUniActivity()
+		if (act != null) {
+			act!.runOnUiThread(() => {
+				fn()
+			})
+			return
+		}
+	} catch (e) {
+		// 拿不到 Activity 就直接执行
+	}
+	// #endif
+	fn()
+}
+
+export function playVoiceUrl(url: string, onEnd: () => void): void {
+	stopVoice()
+	audioEndCb = onEnd
+	const ctx = uni.createInnerAudioContext()
+	audioCtx = ctx
+	ctx.onEnded(() => {
+		onMain(() => {
+			if (audioEndCb != null) {
+				audioEndCb!()
+			}
+		})
+	})
+	ctx.onError((res) => {
+		onMain(() => {
+			if (audioEndCb != null) {
+				audioEndCb!()
+			}
+		})
+	})
+	ctx.src = url
+	ctx.play()
+}
+
+export function stopVoice(): void {
+	if (audioCtx != null) {
+		try {
+			audioCtx!.stop()
+		} catch (e) {
+			// 忽略
+		}
+		audioCtx = null
+	}
+	audioEndCb = null
+}
+
+// ---------------- 工具定义与规则 ----------------
+
+/** send_voice 工具 schema */
+export function voiceTools(): Array<UTSJSONObject> {
+	const pText = new UTSJSONObject()
+	pText['type'] = 'string'
+	pText['description'] = '要念出来的话，5~80 字，口语化'
+	const pEmo = new UTSJSONObject()
+	pEmo['type'] = 'string'
+	pEmo['description'] = '语气，可选：happy/sad/angry/surprised/whisper/calm；不填则用 App 设好的默认说法'
+	pEmo['enum'] = ['happy', 'sad', 'angry', 'surprised', 'whisper', 'calm']
+	const props = new UTSJSONObject()
+	props['text'] = pText
+	props['emotion'] = pEmo
+	const params = new UTSJSONObject()
+	params['type'] = 'object'
+	params['properties'] = props
+	params['required'] = ['text']
+	const fn = new UTSJSONObject()
+	fn['name'] = 'send_voice'
+	fn['description'] = '把一段话合成语音发给用户。text 就是你要说出口的内容。'
+	fn['parameters'] = params
+	const item = new UTSJSONObject()
+	item['type'] = 'function'
+	item['function'] = fn
+	const arr = new Array<UTSJSONObject>()
+	arr.push(item)
+	return arr
+}
+
+/** 拼进 <系统工具说明> 的语音规则段 */
+export function voiceRule(): string {
+	return '【语音】你有 send_voice 工具：调用后你说的话会被合成语音发给用户（text 参数就是你要说出口的内容）。用户说「发条语音」「想听你声音」「念给我听」这类要求时必须调用；撒娇、安慰、道晚安等场合也可以主动发。' +
+		'语音内容要像随口说出来的大白话：短、碎、可以有停顿（用……），不要书面语，不要叠词堆卖萌（一句最多来一次）。' +
+		'emotion 参数按当下心情选，别一直填 calm。调用 send_voice 时正文只写一句很短的应答（比如「好呀」），不要把语音里要说的内容整段重复写在正文。合成失败时工具会告诉你原因，用文字向用户说明就好。'
+}

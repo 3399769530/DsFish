@@ -23,6 +23,8 @@ export type Character = {
 	userName: string
 	/** 头像图片路径（本地文件），空则用昵称首字 */
 	avatar?: string
+	/** 聊天背景图路径（本地文件），新会话默认带上；空 = 不显示背景 */
+	bgImage?: string
 	/** 系统提示词 */
 	prompt: string
 	/** 新会话的初始好感度 0~100（不填 = 20） */
@@ -44,6 +46,10 @@ export type Msg = {
 	imageThumb?: string
 	/** 这条回复的情绪（[mood:xx] 解析结果） */
 	mood?: string
+	/** AI 语音消息的本地 mp3 文件路径（text 存说过的话，进上下文） */
+	voice?: string
+	/** 语音时长（秒，按文件字节 ÷ 128kbps 估算；0/无 = 未知） */
+	voiceDur?: number
 	/** 旁白消息（骰子生成的事件，居中显示，不算我说的） */
 	narration?: boolean
 	/** 主动消息的隐形指令：照发给模型，但界面上不显示气泡 */
@@ -81,8 +87,18 @@ export type Chat = {
 	proMinSec?: number
 	/** 主动消息间隔上限（秒，>= 下限），缺省 180 */
 	proMaxSec?: number
+	/** 聊天背景图（永久目录文件路径，空 = 没有） */
+	bgImage?: string
+	/** 连续多少条主动消息没回复就停止主动（1~10，缺省 2） */
+	proCap?: number
 	/** 禁止模型用 [pass] 跳过主动发言（缺省 = 允许） */
 	proPassOff?: boolean
+	/** 关掉分段气泡的随机延迟（缺省 = 开） */
+	bubbleDelayOff?: boolean
+	/** 分段气泡延迟下限（毫秒，缺省 100） */
+	bdMinMs?: number
+	/** 分段气泡延迟上限（毫秒，缺省 500） */
+	bdMaxMs?: number
 	/** 被压缩掉的那部分对话的摘要 */
 	summary?: string
 	/** 已经压缩进摘要的消息条数 */
@@ -138,7 +154,7 @@ export type CharRow = {
 	image: string
 }
 
-/** 聊天页气泡行（时间分隔已算好） */
+/** 聊天页气泡行（时间分隔已算好）（防编译缓存标记） */
 export type BubbleRow = {
 	id: string
 	text: string
@@ -147,6 +163,10 @@ export type BubbleRow = {
 	timeLabel: string
 	/** 有图就是图片消息 */
 	image: string
+	/** 语音消息的本地 mp3 文件路径（BreezeBlue 合成落盘，永久有效） */
+	voice: string
+	/** 语音时长（秒，0 = 未知显示「语音」） */
+	voiceDur: number
 	/** 情绪徽章（空 = 不显示） */
 	mood: string
 	/** 旁白消息 */
@@ -750,6 +770,8 @@ export function buildBubbleRows(list: Array<Msg>): Array<BubbleRow> {
 				showTime: false,
 				timeLabel: '',
 				image: '',
+				voice: '',
+				voiceDur: 0,
 				mood: '',
 				narration: false,
 				pro: true
@@ -768,6 +790,8 @@ export function buildBubbleRows(list: Array<Msg>): Array<BubbleRow> {
 			showTime: show,
 			timeLabel: fmtMsgTime(m.time),
 			image: m.image != null ? m.image! : '',
+			voice: m.voice != null ? m.voice! : '',
+			voiceDur: m.voiceDur != null ? m.voiceDur! : 0,
 			mood: m.mood != null ? m.mood! : '',
 			narration: m.narration != null ? m.narration! : false,
 			pro: false
@@ -921,6 +945,7 @@ export function createChatFor(char: Character): Chat {
 		charName: char.name.trim().length > 0 ? char.name.trim() : '未命名角色',
 		charEmoji: avatarText(char.name),
 		charAvatar: char.avatar != null ? char.avatar! : '',
+		bgImage: char.bgImage != null ? char.bgImage! : '',
 		prompt: char.prompt,
 		userName: char.userName,
 		// 角色卡里设了默认好感度就用它，否则用通用的起始值
@@ -1041,8 +1066,64 @@ export function isProPassOn(chat: Chat): boolean {
 	return chat.proPassOff != true
 }
 
-/** 保存主动消息开关和间隔（秒） */
-export function setProactive(chatId: string, on: boolean, minSec: number, maxSec: number, passOn: boolean): void {
+/** 连续几条主动消息没回复就停止（1~10，缺省 2） */
+export function proCapOf(chat: Chat): number {
+	const v = chat.proCap
+	if (v != null && v! >= 1 && v! <= 10) {
+		return v!
+	}
+	return 2
+}
+
+/** 这条会话的分段气泡延迟是否开启（默认开） */
+export function isBubbleDelayOn(chat: Chat): boolean {
+	return chat.bubbleDelayOff != true
+}
+
+/** 分段气泡延迟下限（毫秒，0~5000，缺省 500） */
+export function bdMinMsOf(chat: Chat): number {
+	const v = chat.bdMinMs
+	if (v != null && v! >= 0 && v! <= 5000) {
+		return v!
+	}
+	return 500
+}
+
+/** 分段气泡延迟上限（毫秒，不低于下限，缺省 1000） */
+export function bdMaxMsOf(chat: Chat): number {
+	const lo = bdMinMsOf(chat)
+	const v = chat.bdMaxMs
+	if (v != null && v! >= lo && v! <= 8000) {
+		return v!
+	}
+	return lo > 1000 ? lo : 1000
+}
+
+/** 下一条分段气泡的随机延迟（毫秒） */
+export function bubbleDelayMs(chat: Chat): number {
+	const lo = bdMinMsOf(chat)
+	const hi = bdMaxMsOf(chat)
+	if (hi <= lo) {
+		return lo
+	}
+	return lo + Math.floor(Math.random() * (hi - lo + 1))
+}
+
+/** 保存分段气泡延迟设置 */
+export function setBubbleDelay(chatId: string, on: boolean, minMs: number, maxMs: number): void {
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].bubbleDelayOff = !on
+			list[i].bdMinMs = minMs
+			list[i].bdMaxMs = maxMs
+		}
+	}
+	saveChats(list)
+}
+
+/** 保存主动消息开关、间隔（秒）和连发上限（条） */
+export function setProactive(chatId: string, on: boolean, minSec: number, maxSec: number, passOn: boolean, cap: number): void {
 	const list = loadChats()
 	for (let i = 0; i < list.length; i++) {
 		if (list[i].id == chatId) {
@@ -1050,6 +1131,18 @@ export function setProactive(chatId: string, on: boolean, minSec: number, maxSec
 			list[i].proMinSec = minSec
 			list[i].proMaxSec = maxSec
 			list[i].proPassOff = !passOn
+			list[i].proCap = cap
+		}
+	}
+	saveChats(list)
+}
+
+/** 保存这条会话的聊天背景图路径（空串 = 不用背景） */
+export function setChatBg(chatId: string, path: string): void {
+	const list = loadChats()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].id == chatId) {
+			list[i].bgImage = path
 		}
 	}
 	saveChats(list)

@@ -79,6 +79,19 @@
 					<text class="tip">新建会话时的初始好感度，0~100；已有的会话不受影响</text>
 				</view>
 
+				<!-- 聊天背景 -->
+				<view class="field">
+					<text class="label">聊天背景</text>
+					<view v-if="bgPath.length > 0" class="bg-prev">
+						<image class="bg-prev-img" :src="bgPath" mode="aspectFill" @error="onBgErr"></image>
+					</view>
+					<view class="hero-actions">
+						<text class="hero-link" @click="onPickBg">{{ bgPath.length > 0 ? '换一张' : '选张图片' }}</text>
+						<text v-if="bgPath.length > 0" class="hero-link-del" @click="onClearBg">移除</text>
+					</view>
+					<text class="tip">用这张卡开的新会话默认带上这个背景；不设置就是默认纸色。已开的会话可以在会话设定里单独换</text>
+				</view>
+
 				<!-- 初始对话 -->
 				<view class="section">
 					<text class="sec-t">初始对话</text>
@@ -127,7 +140,7 @@
 	import { Character, InitDialog, avatarText, newChar, findChar, upsertChar, deleteChar, parseNumberText } from '../../utils/store.uts'
 	import { optStr } from '../../utils/opt.uts'
 	import { clampAffinity } from '../../utils/affinity.uts'
-	import { PickResult, pickAvatar, removeAvatarFile } from '../../utils/image.uts'
+	import { PickResult, pickImage, pickAvatar, removeAvatarFile } from '../../utils/image.uts'
 	import DashBorder from '../../components/dash-border/dash-border.uvue'
 	import PaperSheet from '../../components/paper-sheet/paper-sheet.uvue'
 
@@ -141,6 +154,7 @@
 				headPad: 18,
 				isNew: true,
 				avatarPath: '',
+				bgPath: '',
 				varChar: '{{char}}',
 				varUser: '{{user}}',
 				affText: '20',
@@ -184,6 +198,7 @@
 					if (this.c.avatar != null) {
 						this.avatarPath = this.c.avatar!
 					}
+					this.bgPath = this.c.bgImage != null ? this.c.bgImage! : ''
 					const init = this.c.affinity != null ? clampAffinity(this.c.affinity!) : 20
 					this.affText = init.toString()
 					this.labelText = this.c.label != null ? this.c.label! : ''
@@ -211,6 +226,30 @@
 				}
 				this.avatarPath = ''
 				this.c.avatar = ''
+			},
+			onPickBg(): void {
+				pickImage((r: PickResult) => {
+					if (!r.ok) {
+						return
+					}
+					if (this.bgPath.length > 0 && this.bgPath != r.path) {
+						removeAvatarFile(this.bgPath)
+					}
+					this.bgPath = r.path
+					this.c.bgImage = r.path
+				})
+			},
+			onClearBg(): void {
+				if (this.bgPath.length > 0) {
+					removeAvatarFile(this.bgPath)
+				}
+				this.bgPath = ''
+				this.c.bgImage = ''
+			},
+			onBgErr(): void {
+				// 图文件没了：清掉预览，保存后也不再引用
+				this.bgPath = ''
+				this.c.bgImage = ''
 			},
 			avatarText(name: string): string {
 				return avatarText(name)
@@ -429,6 +468,22 @@
 	.hero-img {
 		width: 64px;
 		height: 64px;
+	}
+
+	/* 聊天背景预览框 */
+	.bg-prev {
+		margin-top: 8px;
+		height: 120px;
+		border-width: 1px;
+		border-style: solid;
+		border-color: #DCD4C4;
+		border-radius: 4px;
+		overflow: hidden;
+	}
+
+	.bg-prev-img {
+		width: 100%;
+		height: 120px;
 	}
 
 	.hero-actions {

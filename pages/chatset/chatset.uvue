@@ -31,6 +31,18 @@
 				</view>
 
 				<view class="field">
+					<text class="label">聊天背景</text>
+					<view v-if="bgPath.length > 0" class="bg-prev">
+						<image class="bg-prev-img" :src="bgPath" mode="aspectFill" @error="onBgErr"></image>
+					</view>
+					<view class="hero-actions">
+						<text class="hero-link" @click="onPickBg">{{ bgPath.length > 0 ? '换一张' : '选张图片' }}</text>
+						<text v-if="bgPath.length > 0" class="hero-link-del" @click="onClearBg">移除</text>
+					</view>
+					<text class="tip">这张会话的背景图，只有这一段对话生效；会盖一层纸色半透明，不影响读字</text>
+				</view>
+
+				<view class="field">
 					<text class="label">角色昵称</text>
 					<input class="input" :value="name" :maxlength="24" placeholder="这一段里 AI 叫什么"
 						placeholder-style="color:#B9B1A0" @input="onNameInput" />
@@ -106,7 +118,7 @@
 				<view class="switch-row" @click="toggleProactive">
 					<view class="switch-main">
 						<text class="switch-t">主动消息</text>
-						<text class="switch-s">待在这个会话里一段时间没动静，AI 会先开口找你；连续 3 条没回就停</text>
+						<text class="switch-s">待在这个会话里一段时间没动静，AI 会先开口找你；连续几条没回就停（下面可设）</text>
 					</view>
 					<view class="tg" :style="proactiveOn ? 'background-color:#1C1A16;justify-content:flex-end' : 'background-color:#DCD4C4;justify-content:flex-start'">
 						<view class="tg-knob"></view>
@@ -124,7 +136,13 @@
 							placeholder-style="color:#B9B1A0" @input="onProMaxInput" />
 						<text class="pro-unit">秒</text>
 					</view>
-					<text class="pro-tip">空闲超过这个区间里的随机时长，AI 就主动说话；最短不低于 10 秒</text>
+					<view class="pro-row" style="margin-top: 5px;">
+						<text class="pro-label">上限</text>
+						<input class="pro-input" type="number" :value="proCapText" :maxlength="2" placeholder="2"
+							placeholder-style="color:#B9B1A0" @input="onProCapInput" />
+						<text class="pro-unit">条</text>
+					</view>
+					<text class="pro-tip">空闲超过这个区间里的随机时长，AI 就主动说话；最短不低于 10 秒。连发上限：连续这么多条主动消息你没回，AI 就不再主动了（1~10 条）</text>
 				</view>
 
 				<view v-if="proactiveOn" class="switch-row" @click="toggleProPass">
@@ -135,6 +153,33 @@
 					<view class="tg" :style="proPassOn ? 'background-color:#1C1A16;justify-content:flex-end' : 'background-color:#DCD4C4;justify-content:flex-start'">
 						<view class="tg-knob"></view>
 					</view>
+				</view>
+
+				<view class="hair"></view>
+				<!-- 分段气泡延迟设置（防 Vite 缓存标记） -->
+
+				<view class="switch-row" @click="toggleBd">
+					<view class="switch-main">
+						<text class="switch-t">分段气泡延迟</text>
+						<text class="switch-s">AI 的长回复切成多条气泡后，每条间隔一个随机时长逐条发出，像真人连发</text>
+					</view>
+					<view class="tg" :style="bdOn ? 'background-color:#1C1A16;justify-content:flex-end' : 'background-color:#DCD4C4;justify-content:flex-start'">
+						<view class="tg-knob"></view>
+					</view>
+				</view>
+
+				<view v-if="bdOn" class="pro-box">
+					<view class="pro-row">
+						<text class="pro-label">最短</text>
+						<input class="pro-input" type="number" :value="bdMinText" :maxlength="5" placeholder="500"
+							placeholder-style="color:#B9B1A0" @input="onBdMinInput" />
+						<text class="pro-unit">毫秒</text>
+						<text class="pro-label pro-label-2">最长</text>
+						<input class="pro-input" type="number" :value="bdMaxText" :maxlength="5" placeholder="1000"
+							placeholder-style="color:#B9B1A0" @input="onBdMaxInput" />
+						<text class="pro-unit">毫秒</text>
+					</view>
+					<text class="pro-tip">每条气泡之间随机等这么久再发出；最短 0（秒出）、最长 5000 毫秒</text>
 				</view>
 				<view class="hair"></view>
 
@@ -153,8 +198,8 @@
 </template>
 
 <script lang="uts">
-	import { Chat, Character, avatarText, findChat, findChar, updateChatSettings, isAffinityOn, isTimeOn, isMemHintOn, setChatToggles, isProactiveOn, isProPassOn, proMinSecOf, proMaxSecOf, setProactive, parseNumberText } from '../../utils/store.uts'
-	import { PickResult, pickAvatar, removeAvatarFile } from '../../utils/image.uts'
+	import { Chat, Character, avatarText, findChat, findChar, updateChatSettings, setChatBg, isAffinityOn, isTimeOn, isMemHintOn, setChatToggles, isProactiveOn, isProPassOn, proMinSecOf, proMaxSecOf, proCapOf, setProactive, isBubbleDelayOn, bdMinMsOf, bdMaxMsOf, setBubbleDelay, parseNumberText } from '../../utils/store.uts'
+	import { PickResult, pickImage, pickAvatar, removeAvatarFile } from '../../utils/image.uts'
 	import { optStr } from '../../utils/opt.uts'
 
 	export default {
@@ -166,6 +211,7 @@
 				userName: '',
 				prompt: '',
 				avatarPath: '',
+				bgPath: '',
 				hasChar: false,
 				affinityOn: true,
 				timeOn: true,
@@ -174,10 +220,15 @@
 				proPassOn: true,
 				proMinText: '60',
 				proMaxText: '180',
+				proCapText: '2',
+				bdOn: true,
+				bdMinText: '500',
+				bdMaxText: '1000',
 				charPrompt: '',
 				charUserName: '',
 				charName: '',
 				charAvatar: '',
+				charBg: '',
 				varChar: '{{char}}',
 				varUser: '{{user}}',
 			}
@@ -204,6 +255,7 @@
 			const c = chat!
 			this.name = c.charName
 			this.avatarPath = c.charAvatar != null ? c.charAvatar! : ''
+			this.bgPath = c.bgImage != null ? c.bgImage! : ''
 			this.userName = c.userName != null ? c.userName! : ''
 			this.prompt = c.prompt != null ? c.prompt! : ''
 			this.affinityOn = isAffinityOn(c)
@@ -213,6 +265,10 @@
 			this.proPassOn = isProPassOn(c)
 			this.proMinText = proMinSecOf(c).toString()
 			this.proMaxText = proMaxSecOf(c).toString()
+			this.proCapText = proCapOf(c).toString()
+			this.bdOn = isBubbleDelayOn(c)
+			this.bdMinText = bdMinMsOf(c).toString()
+			this.bdMaxText = bdMaxMsOf(c).toString()
 
 
 			const ch = findChar(c.charId)
@@ -222,6 +278,7 @@
 				this.charUserName = ch!.userName
 				this.charPrompt = ch!.prompt
 				this.charAvatar = ch!.avatar != null ? ch!.avatar! : ''
+				this.charBg = ch!.bgImage != null ? ch!.bgImage! : ''
 				// 会话里没单独设过的，用角色卡的填上
 				if (this.userName.length == 0) {
 					this.userName = this.charUserName
@@ -252,6 +309,27 @@
 					removeAvatarFile(this.avatarPath)
 				}
 				this.avatarPath = ''
+			},
+			onPickBg(): void {
+				pickImage((r: PickResult) => {
+					if (!r.ok) {
+						return
+					}
+					if (this.bgPath.length > 0 && this.bgPath != r.path) {
+						removeAvatarFile(this.bgPath)
+					}
+					this.bgPath = r.path
+				})
+			},
+			onClearBg(): void {
+				if (this.bgPath.length > 0) {
+					removeAvatarFile(this.bgPath)
+				}
+				this.bgPath = ''
+			},
+			onBgErr(): void {
+				// 图文件没了：清掉预览，保存后聊天页也不再引用
+				this.bgPath = ''
 			},
 			onNameInput(e: InputEvent): void {
 				this.name = e.detail.value
@@ -296,11 +374,24 @@
 			onProMaxInput(e: InputEvent): void {
 				this.proMaxText = e.detail.value
 			},
+			onProCapInput(e: InputEvent): void {
+				this.proCapText = e.detail.value
+			},
+			toggleBd(): void {
+				this.bdOn = !this.bdOn
+			},
+			onBdMinInput(e: InputEvent): void {
+				this.bdMinText = e.detail.value
+			},
+			onBdMaxInput(e: InputEvent): void {
+				this.bdMaxText = e.detail.value
+			},
 			onReset(): void {
 				this.name = this.charName
 				this.userName = this.charUserName
 				this.prompt = this.charPrompt
 				this.avatarPath = this.charAvatar
+				this.bgPath = this.charBg
 				uni.showToast({ title: '已恢复，记得保存', icon: 'none' })
 			},
 			onSave(): void {
@@ -310,6 +401,7 @@
 					return
 				}
 				updateChatSettings(this.chatId, n, this.userName.trim(), this.prompt.trim(), this.avatarPath)
+				setChatBg(this.chatId, this.bgPath)
 				setChatToggles(this.chatId, this.affinityOn, this.timeOn, this.memHintOn)
 				// 主动消息间隔：最低 60 秒，上限不低于下限
 				let pMin = parseNumberText(this.proMinText)
@@ -320,7 +412,31 @@
 				if (pMax < pMin) {
 					pMax = pMin
 				}
-				setProactive(this.chatId, this.proactiveOn, pMin, pMax, this.proPassOn)
+				// 连发上限：1~10 条
+				let pCap = parseNumberText(this.proCapText)
+				if (pCap < 1) {
+					pCap = 2
+				}
+				if (pCap > 10) {
+					pCap = 10
+				}
+				setProactive(this.chatId, this.proactiveOn, pMin, pMax, this.proPassOn, pCap)
+				// 分段气泡延迟：最短 0~5000，上限不低于下限、封顶 8000
+				let bMin = parseNumberText(this.bdMinText)
+				if (bMin < 0) {
+					bMin = 0
+				}
+				if (bMin > 5000) {
+					bMin = 5000
+				}
+				let bMax = parseNumberText(this.bdMaxText)
+				if (bMax < bMin) {
+					bMax = bMin
+				}
+				if (bMax > 8000) {
+					bMax = 8000
+				}
+				setBubbleDelay(this.chatId, this.bdOn, bMin, bMax)
 				uni.showToast({ title: '已保存', icon: 'none' })
 				setTimeout(() => {
 					uni.navigateBack()
@@ -452,6 +568,22 @@
 		font-size: 12px;
 		color: #A9A292;
 		margin-left: 14px;
+	}
+
+	/* 聊天背景预览框 */
+	.bg-prev {
+		margin-top: 8px;
+		height: 120px;
+		border-width: 1px;
+		border-style: solid;
+		border-color: #DCD4C4;
+		border-radius: 4px;
+		overflow: hidden;
+	}
+
+	.bg-prev-img {
+		width: 100%;
+		height: 120px;
 	}
 
 	.field {

@@ -15,14 +15,11 @@
 		<!-- ==================== 首页 ==================== -->
 		<view v-if="tab == 0" class="pane">
 
-			<!-- 状态行 -->
-			<view class="status">
+		<!-- 模型没配置时提示一条信息，点进去配置 -->
+			<view v-if="status.state == 0" class="cfg-tip" @click="onStatusTap">
 				<view class="dot" :style="'background-color:' + status.color"></view>
-				<text class="status-t">{{ status.line }}</text>
-				<view class="status-link" @click="onStatusTap">
-					<text class="status-link-t" :style="'color:' + status.linkColor">{{ status.link }}</text>
-					<view class="status-link-line" :style="'background-color:' + status.linkColor"></view>
-				</view>
+				<text class="cfg-tip-t">模型还没配置，AI 还不会说话，点这里去配置</text>
+				<text class="cfg-tip-go">去配置 ›</text>
 			</view>
 
 			<view class="section">
@@ -132,16 +129,29 @@
 							<text class="me-sub" @click="onPickMeAvatar">{{ meAvatar.length > 0 ? '换张头像' : '点这里换个头像' }}</text>
 						</view>
 					</view>
-					<view class="hair"></view>
 
-					<!-- 当前接口 -->
-					<view class="section-inline">
-						<text class="sec-t">当前接口</text>
-					</view>
-					<view class="row-btn" @click="onStatusTap">
-						<view class="dotc" :style="'background-color:' + status.color"></view>
-						<text class="status-t">{{ status.line }}</text>
-						<text class="row-arrow">›</text>
+					<!-- 当前配置：模型 + 声音 双卡片（卡片自带边框，上方不再压发丝线） -->
+					<view class="cards cards-me">
+						<view class="cfg-card" @click="onStatusTap">
+							<view class="cfg-top">
+								<text class="cfg-k">模型</text>
+								<text class="cfg-link" :style="'color:' + status.linkColor">{{ status.link }}</text>
+							</view>
+							<view class="cfg-line">
+								<view class="dot" :style="'background-color:' + status.color"></view>
+								<text class="cfg-v">{{ status.line }}</text>
+							</view>
+						</view>
+						<view class="cfg-card" @click="onTtsTap">
+							<view class="cfg-top">
+								<text class="cfg-k">声音</text>
+								<text class="cfg-link" :style="'color:' + ttsStatus.color">{{ ttsStatus.link }}</text>
+							</view>
+							<view class="cfg-line">
+								<view class="dot" :style="'background-color:' + ttsStatus.color"></view>
+								<text class="cfg-v">{{ ttsStatus.line }}</text>
+							</view>
+						</view>
 					</view>
 					<view class="hair"></view>
 
@@ -186,6 +196,12 @@
 					<view class="row-btn" @click="onMemory">
 						<text class="row-main-t">记忆管理</text>
 						<text class="row-sub-t">查看和编辑</text>
+						<text class="row-arrow">›</text>
+					</view>
+					<view class="hair"></view>
+					<view class="row-btn" @click="onCleanCache">
+						<text class="row-main-t">清除缓存</text>
+						<text class="row-sub-t">{{ cacheLabel }}</text>
 						<text class="row-arrow">›</text>
 					</view>
 					<view class="hair"></view>
@@ -245,6 +261,8 @@
 
 <script lang="uts">
 	import { ChatRow, CharRow, Profile, StatusView, Me, Stats, getActiveProfile, emptyProfile, loadChats, loadChars, deleteChat, setChatTitle, duplicateChat, seedDemo, seedDefaultChat, buildChatRows, buildStatus, todayLabel, countLabel, truncate, avatarText, charDisplayOf, loadMe, saveMe, buildStats, exportAll, importAll, wipeAll, ImportResult } from '../../utils/store.uts'
+	import { TtsStatusView, loadTtsConfig, buildTtsStatus } from '../../utils/tts.uts'
+	import { scanCache, cleanCache, fmtBytes } from '../../utils/clean.uts'
 	import PaperSheet from '../../components/paper-sheet/paper-sheet.uvue'
 	import DashBorder from '../../components/dash-border/dash-border.uvue'
 	import { PickResult, pickAvatar, removeAvatarFile } from '../../utils/image.uts'
@@ -268,9 +286,17 @@
 					link: '去配置',
 					linkColor: '#B4553C'
 				} as StatusView,
+				ttsStatus: {
+					state: 0,
+					line: '未开启',
+					color: '#A9A292',
+					link: '去开启'
+				} as TtsStatusView,
 				rows: [] as Array<ChatRow>,
 				meName: '',
 				meAvatar: '',
+				/** 清除缓存行的小字：孤儿文件数与体积 */
+				cacheLabel: '没被引用的图片和语音',
 				stats: { chats: 0, chars: 0, msgs: 0, memories: 0 } as Stats,
 				sheetOpen: false,
 				sheetTitle: '',
@@ -335,6 +361,7 @@
 				// 角色列表：备注名优先显示
 				this.profile = getActiveProfile()
 				this.status = buildStatus(this.profile)
+				this.ttsStatus = buildTtsStatus(loadTtsConfig())
 				this.rows = buildChatRows(loadChats())
 				const list = loadChars()
 				const view: Array<CharRow> = []
@@ -498,11 +525,37 @@
 				this.tab = i
 				if (i == 2) {
 					this.refreshMe()
+					this.refreshCacheLabel()
 				}
+			},
+			refreshCacheLabel(): void {
+				// 扫一遍孤儿文件；量小同步扫即可，出错就退回默认文案
+				try {
+					const s = scanCache()
+					if (s.files == 0) {
+						this.cacheLabel = '没有可清理的'
+					} else {
+						this.cacheLabel = s.files.toString() + ' 个文件 · ' + fmtBytes(s.bytes)
+					}
+				} catch (e) {
+					this.cacheLabel = '没被引用的图片和语音'
+				}
+			},
+			onCleanCache(): void {
+				this.sheetMode = 'clean'
+				this.sheetTitle = '清除缓存？删掉没被任何对话、角色卡引用的图片和语音文件，正在用的不会动'
+				this.sheetItems = ['确认清除']
+				this.sheetDanger = 0
+				this.sheetOpen = true
 			},
 			onStatusTap(): void {
 				uni.navigateTo({
 					url: '/pages/config/config'
+				})
+			},
+			onTtsTap(): void {
+				uni.navigateTo({
+					url: '/pages/ttsconfig/ttsconfig'
 				})
 			},
 			onNewChat(): void {
@@ -578,6 +631,22 @@
 			},
 			onSheetPick(i: number): void {
 				this.sheetOpen = false
+				if (this.sheetMode == 'clean') {
+					if (i == 0) {
+						try {
+							const r = cleanCache()
+							this.refreshCacheLabel()
+							if (r.removed == 0) {
+								uni.showToast({ title: '没有可清理的', icon: 'none' })
+							} else {
+								uni.showToast({ title: '清了 ' + r.removed.toString() + ' 个 · ' + fmtBytes(r.freed), icon: 'none' })
+							}
+						} catch (e) {
+							uni.showToast({ title: '清理失败', icon: 'none' })
+						}
+					}
+					return
+				}
 				if (this.sheetMode == 'newchar') {
 					if (i == 0) {
 						uni.navigateTo({ url: '/pages/char/char' })
@@ -703,6 +772,86 @@
 		background-color: #1C1A16;
 		margin-left: 24px;
 		margin-right: 24px;
+	}
+
+	/* ---------- 配置双卡片 ---------- */
+	.cards {
+		flex-direction: row;
+		padding: 14px 24px 0 24px;
+	}
+
+	.cards-me {
+		padding: 0 0 12px 0;
+	}
+
+	/* 首页未配置提示条 */
+	.cfg-tip {
+		flex-direction: row;
+		align-items: center;
+		margin: 14px 24px 0 24px;
+		padding: 11px 14px;
+		background-color: #F3E4DC;
+		border: 1px solid #B4553C;
+		border-radius: 4px;
+	}
+
+	.cfg-tip-t {
+		flex: 1;
+		font-size: 12px;
+		line-height: 18px;
+		color: #8A5A46;
+	}
+
+	.cfg-tip-go {
+		font-size: 12px;
+		color: #B4553C;
+		margin-left: 10px;
+	}
+
+	.cfg-card {
+		flex: 1;
+		padding: 12px 14px;
+		background-color: #EFE7D8;
+		border: 1px solid #DCD4C4;
+		border-radius: 4px;
+	}
+
+	.cfg-card + .cfg-card {
+		margin-left: 10px;
+	}
+
+	.cfg-top {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.cfg-k {
+		font-size: 11px;
+		letter-spacing: 3px;
+		color: #8A8375;
+		font-weight: bold;
+	}
+
+	.cfg-link {
+		font-size: 11.5px;
+	}
+
+	.cfg-line {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 9px;
+	}
+
+	.cfg-v {
+		flex: 1;
+		font-size: 11.5px;
+		color: #6B6656;
+		lines: 1;
+		text-overflow: ellipsis;
+		/* web 端 lines 不生效靠这个：单行不换行 + 省略号 */
+		white-space: nowrap;
+		overflow: hidden;
 	}
 
 	/* ---------- 状态行 ---------- */
@@ -971,7 +1120,6 @@
 		font-family: "Songti SC", "Noto Serif CJK SC", serif;
 		font-size: 19px;
 		font-weight: bold;
-		letter-spacing: 0.3px;
 		color: #1C1A16;
 	}
 

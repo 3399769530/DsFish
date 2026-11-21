@@ -1,0 +1,256 @@
+<template>
+	<view class="page">
+
+		<!-- 头部：返回 + 标题 -->
+		<view class="nav" :style="'padding-top:' + headPad + 'px'">
+			<view class="back" @click="goBack">
+				<text class="back-t">←</text>
+			</view>
+			<text class="title">获取语音 Key</text>
+		</view>
+		<view class="rule"></view>
+
+		<scroll-view class="body" scroll-y="true">
+			<view class="wrap">
+
+				<text class="intro">语音消息用 BreezeBlue 的服务，需要一个免费的 API Key，大概两分钟搞定。跟着下面的图一步步来。</text>
+
+				<!-- 第 1 步 -->
+				<view class="step">
+					<text class="step-n">第 1 步 · 打开官网</text>
+					<text class="step-t">打开 BreezeBlue 官网，点页面上的「免费开始」。</text>
+					<view class="site-link" @click="openSite">
+						<text class="site-link-t">点击这里用浏览器打开 breezeblue.ai/zh</text>
+					</view>
+					<image class="step-img" src="/static/get_key/1.png" mode="widthFix" @click="preview('/static/get_key/1.png')"></image>
+				</view>
+
+				<!-- 第 2 步 -->
+				<view class="step">
+					<text class="step-n">第 2 步 · 注册或登录</text>
+					<text class="step-t">输入邮箱、设置一个密码（至少 8 位），点「继续」即可——没注册过的邮箱会自动创建账户，注册和登录是同一个入口。</text>
+					<image class="step-img" src="/static/get_key/2.png" mode="widthFix" @click="preview('/static/get_key/2.png')"></image>
+				</view>
+
+				<!-- 第 3 步 -->
+				<view class="step">
+					<text class="step-n">第 3 步 · 找到 API 密钥入口</text>
+					<text class="step-t">登录后点右上角菜单，在「平台」分组里找到「API 密钥」点进去。</text>
+					<image class="step-img" src="/static/get_key/3.png" mode="widthFix" @click="preview('/static/get_key/3.png')"></image>
+				</view>
+
+				<!-- 第 4 步 -->
+				<view class="step">
+					<text class="step-n">第 4 步 · 创建并复制 Key</text>
+					<text class="step-t">点「创建 API 密钥」，名字随便起（比如 dsfish）。完整的 brz_ 密钥只显示一次，当场复制好。</text>
+					<image class="step-img" src="/static/get_key/4.png" mode="widthFix" @click="preview('/static/get_key/4.png')"></image>
+				</view>
+
+				<!-- 第 5 步 -->
+				<view class="step">
+					<text class="step-n">第 5 步 · 回到 App 粘贴</text>
+					<text class="step-t">回到上一页，把 brz_ 开头的密钥粘贴进输入框，点「保存语音设置」，再点「试听一句」听听效果。</text>
+				</view>
+
+				<view class="note-box">
+					<text class="note-t">小提醒：密钥像密码一样保管，别贴到群里或传上网；新用户有免费额度，按字符计费，平时聊天花不了多少。</text>
+				</view>
+
+				<view class="backbtn" @click="goBack">
+					<text class="backbtn-t">填好了，返回粘贴</text>
+				</view>
+
+				<view class="pad"></view>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script lang="uts">
+	// #ifdef APP-ANDROID
+	import Intent from 'android.content.Intent'
+	import Uri from 'android.net.Uri'
+	// #endif
+
+	export default {
+		data() {
+			return {
+				headPad: 18
+			}
+		},
+		onLoad() {
+			try {
+				const info = uni.getWindowInfo()
+				const sb = info.statusBarHeight
+				if (sb > 0) {
+					this.headPad = sb + 14
+				}
+			} catch (e) {
+				// 用默认值
+			}
+		},
+		methods: {
+			openSite(): void {
+				// #ifdef APP-ANDROID
+				uni.showToast({ title: '正在用浏览器打开…', icon: 'none' })
+				try {
+					const act = UTSAndroid.getUniActivity()
+					if (act != null) {
+						const uri = Uri.parse('https://breezeblue.ai/zh')
+						const intent = new Intent(Intent.ACTION_VIEW, uri)
+						intent.setData(uri)
+						act!.startActivity(intent)
+					}
+				} catch (e) {
+					uni.showToast({ title: '打不开浏览器，手动访问 breezeblue.ai', icon: 'none' })
+				}
+				// #endif
+				// #ifndef APP-ANDROID
+				uni.setClipboardData({
+					data: 'https://breezeblue.ai/zh',
+					success: () => {
+						uni.showToast({ title: '链接已复制，浏览器粘贴打开', icon: 'none' })
+					}
+				})
+				// #endif
+			},
+			preview(path: string): void {
+				uni.previewImage({ urls: [path] })
+			},
+			goBack(): void {
+				uni.navigateBack()
+			}
+		}
+	}
+</script>
+
+<style>
+	.page {
+		flex: 1;
+		flex-direction: column;
+		background-color: #F7F2E8;
+	}
+
+	.nav {
+		flex-direction: row;
+		align-items: flex-end;
+		padding-left: 24px;
+		padding-right: 24px;
+		padding-bottom: 10px;
+	}
+
+	.back {
+		width: 34px;
+		height: 30px;
+		justify-content: flex-end;
+		padding-bottom: 4px;
+	}
+
+	.back-t {
+		font-size: 20px;
+		color: #1C1A16;
+	}
+
+	.title {
+		font-family: "Songti SC", "Noto Serif CJK SC", serif;
+		font-size: 23px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #1C1A16;
+		margin-left: 6px;
+	}
+
+	.rule {
+		height: 2px;
+		background-color: #1C1A16;
+		margin-left: 24px;
+		margin-right: 24px;
+	}
+
+	.body {
+		flex: 1;
+	}
+
+	.wrap {
+		padding-left: 24px;
+		padding-right: 24px;
+	}
+
+	.intro {
+		font-size: 12.5px;
+		line-height: 20px;
+		color: #6B6656;
+		margin-top: 16px;
+	}
+
+	.step {
+		margin-top: 26px;
+	}
+
+	.step-n {
+		font-size: 12px;
+		letter-spacing: 2px;
+		color: #B4553C;
+		font-weight: bold;
+	}
+
+	.step-t {
+		font-size: 13px;
+		line-height: 21px;
+		color: #1C1A16;
+		margin-top: 8px;
+	}
+
+	.step-img {
+		width: 100%;
+		margin-top: 12px;
+		border-width: 1px;
+		border-style: solid;
+		border-color: #DCD4C4;
+		border-radius: 6px;
+	}
+
+	/* 官网跳转链接：超链接样式 */
+	.site-link {
+		margin-top: 10px;
+	}
+
+	.site-link-t {
+		font-size: 13.5px;
+		color: #2B579A;
+	}
+
+	.note-box {
+		margin-top: 30px;
+		padding: 12px 14px;
+		background-color: #EFE7D8;
+		border: 1px solid #DCD4C4;
+		border-radius: 4px;
+	}
+
+	.note-t {
+		font-size: 11.5px;
+		line-height: 19px;
+		color: #8A8375;
+	}
+
+	.backbtn {
+		margin-top: 24px;
+		padding-top: 14px;
+		padding-bottom: 14px;
+		border-radius: 3px;
+		background-color: #1C1A16;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.backbtn-t {
+		font-size: 13px;
+		letter-spacing: 3px;
+		color: #F7F2E8;
+	}
+
+	.pad {
+		height: 28px;
+	}
+</style>

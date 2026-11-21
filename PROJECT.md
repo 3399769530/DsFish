@@ -26,7 +26,8 @@ uni-app x (uvue/UTS) 写的纯本地 AI 聊天 App，Android 优先（web 预览
 | `pages/index/index.uvue` | 首页三 tab：会话列表/角色卡/我的（备份入口） |
 | `pages/char/char.uvue` | 角色卡编辑（顶部大字=列表名，与角色昵称跟随/定制联动） |
 | `pages/chatset/chatset.uvue` | 会话设定（标题/补充提示词/好感度开关/主动消息/pass 开关） |
-| `pages/config/config.uvue` | 服务商配置（默认温度 1.0 / 最大输出 2048 / ctx 按服务商：DS 200000 其他 128000） |
+| `pages/config/config.uvue` | 模型服务商配置（默认温度 1.0 / 最大输出 2048 / ctx 按服务商：DS 200000 其他 128000）；底部一行入口跳语音页 |
+| `pages/ttsconfig/ttsconfig.uvue` | 语音配置独立页（开关/key/三音色预设 chip/语速音调模型/试听；预设整套参数联动） |
 | `pages/memory/memory.uvue` `pages/restore/restore.uvue` | 记忆管理 / 备份恢复 |
 | `pages/cardgen/cardgen.uvue` | 角色卡生成器：填需求→生成提示词→复制去外部模型 |
 | `pages/cardimport/cardimport.uvue` | 导入 AI 生成的角色：粘 JSON→解析→摘要→存卡跳 char 页；与 cardgen 互跳 |
@@ -67,6 +68,14 @@ system = composePrompt(角色提示词, {{char}}/{{user}} 替换) + `<系统工�
 - 首页「新建角色卡」弹底部菜单三项：自己写 / 让 AI 写 / 导入 AI 生成的角色。cardgen ↔ cardimport 页面互跳。
 - 七键：name/identity/appearance/personality/speaking_style/init_dialog/initial_affection。前四字段按 CARD_MERGE_TEMPLATE 合并进 prompt（**不含「你是XX」头**——composePrompt 自动补，写了重复）；init_dialog 拆 user/assistant 进 dialogs；initial_affection 存 c.affinity。
 - 模板一（CARD_GEN_TEMPLATE）和两个附加段（CARD_BLOCK_NOAI/CARD_BLOCK_SPEAK）是用户定稿文案**一个字不许改**；模板占位替换用 `{{用户输入}}`。
+
+### 语音（BreezeBlue TTS，2026-11-21 从 MiniMax 整体迁移）
+独立页 `pages/ttsconfig/ttsconfig.uvue` 配置（key 存本机 `dsfish_tts_v2`，MiniMax 时代的 `dsfish_tts_v1` 已弃用不再读）。接口 `POST {baseUrl}/v1/text-to-speech/{voice_id}?output_format=mp3`，头 `xi-api-key`，体 text/model_id/language_code=zh/instructions/voice_settings{speed 0.5-2, volume 0.01-2}；**响应是 mp3 二进制流**，Android 端 getFileSystemManager 落盘 `USER_DATA_PATH/voices/v<ts>.mp3` 永久有效（消息 voice 字段存本地路径，解决 MiniMax 24h 过期）。三预设（TTS_PRESETS，参数勿改）：迷糊版 voc_8yud7hz7c9q2（默认）、偶像版 voc_rn489h83rcvs、机灵版 voc_u3nxkd5578wc，各带 instruction 表演指令（自然语言，无 pitch 概念）。emotion 枚举→emotionInstruction() 翻成中文指令覆盖预设。send_voice(text,emotion) → 落盘 → 语音气泡（字幕=text，点击播放 playingId 单例）；结果回传 tool 消息继续下一轮。**平台无 CORS：web 预览端 synthesizeTts 直接短路报错（条件编译 #ifndef APP-ANDROID），只有 Android 能合成**——web 端 E2E 只能测配置层。试听文案「你怎么又在点试听呀…」。计费：45 字符≈4.5 分（balance 接口可查）。待升级：角色卡绑音色、mood 联动 emotion、历史语音文件清理。
+
+主动消息连发上限 proCapOf(chat)（Chat.proCap，1~10 缺省 2）：chat.uvue 两处 `proStrikes >= proCap` 判断，chatset「连发上限」输入框，setProactive 第六参。
+
+### 缓存清理（utils/clean.uts）
+「我的」页「清除缓存」行：scanCache() 显示孤儿文件数/体积（进 tab2 时刷新），确认后 cleanCache() 删除。孤儿判定 = USER_DATA_PATH 的 dsfish/ 和 voices/ 目录里的文件不在引用集（会话 charAvatar/bgImage + 消息 image/imageThumb/voice + 角色卡 avatar/bgImage + Me.avatar）中。web 端无文件系统安全空转。语音同步链路（onChunkReceived 攒块 → arrayBufferToBase64 → writeFileSync base64），存盘失败自动退 history-item-id 异步链路。
 
 ## 已确认未修的问题（2026-11 审查，按优先级）
 
